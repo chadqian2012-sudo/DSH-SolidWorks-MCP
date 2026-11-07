@@ -3229,6 +3229,31 @@ def cmd_run(sw, script_path, extra_args, room=None):
             _mat_reports = []
             _mat_block = []
             for _p in _parts:
+                # Only the bundled single-part duct can prove material is inapplicable.
+                _geometry_only = False
+                try:
+                    _duct_script = os.path.join(_HERE, "examples", "build_transition_duct.py")
+                    if (room is None and result.get("ok") is True
+                            and os.path.normcase(os.path.realpath(script_abs)) ==
+                            os.path.normcase(os.path.realpath(_duct_script))
+                            and isinstance(_biz2, dict) and _biz2.get("ok") is True
+                            and _biz2.get("mode") in ("create", "resize")
+                            and _biz2.get("path") == _p
+                            and _biz2.get("artifacts") == [_p]
+                            and _art.get("present") == [_p]):
+                        from sw_surface import saved_duct_geometry_matches
+                        _geometry_only = saved_duct_geometry_matches(
+                            sw, _p, _biz2.get("geometry_sha256"))
+                except Exception:
+                    # An unavailable geometry proof must still face the original material check.
+                    _geometry_only = False
+                if _geometry_only:
+                    _mat_reports.append({
+                        "part": os.path.basename(_p), "ok": None, "applicable": False,
+                        "level": "NOT_APPLICABLE", "attestation": None,
+                        "reasons": ["已核对保存文件与单曲面几何；没有实体，材料校验不适用；不代表材料达标。"],
+                    })
+                    continue
                 _mr = _dg.check_material_attestation(_p)
                 _mat_reports.append({
                     "part": os.path.basename(_p), "ok": _mr["ok"],

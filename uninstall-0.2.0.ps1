@@ -23,6 +23,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $Root        = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $Root 'engineering\tools\profile-manifest.ps1')
 $DshHome     = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
 $ProfilesDir = Join-Path $DshHome 'profiles'
 $DataDir     = Join-Path $DshHome '.agent-presets\engineering'
@@ -98,13 +99,8 @@ foreach ($prof in $targets) {
         foreach ($b in $pkg.dsh.profile.bundles) {
             if ($b -ne $UI_NAME -and $b -ne $SWSL_NAME) { $bundles += $b }
         }
-        $out = [ordered]@{}
-        $out['name'] = $pkg.name
-        $out['private'] = $true
-        if ($pkg.pnpm) { $out['pnpm'] = $pkg.pnpm }
-        $out['dependencies'] = $deps
-        $out['dsh'] = [ordered]@{ profile = [ordered]@{ bundles = $bundles } }
-        WriteNoBom $ProfilePkg (($out | ConvertTo-Json -Depth 12) + "`n")
+        Set-DshProfilePluginEntries $pkg $deps $bundles
+        WriteNoBom $ProfilePkg (($pkg | ConvertTo-Json -Depth 100) + "`n")
         Say ("  [OK] package.json cleaned; bundles = " + ($bundles -join ', '))
     } else { Say ("  [WARN] no " + $ProfilePkg); $script:Bad++ }
 

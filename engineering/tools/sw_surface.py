@@ -1,7 +1,29 @@
 """原生放样曲面扩展；保留原有 SWModel 实现。"""
 import math
+import os
+import win32com.client
 
 from swapi import MM, SWModel, _com_get, _feature_type_name, _is_sketch_feature
+
+
+def saved_duct_geometry_matches(sw, path, geometry_sha256):
+    """核对已保存的单配置风管曲面及文件摘要；查询失败交由材料检查处理。"""
+    from gate_integrity import _sha256
+    doc = sw.GetOpenDocumentByName(path)
+    model = win32com.client.CastTo(doc, "IModelDoc2")
+    part = win32com.client.CastTo(doc, "IPartDoc")
+    solids, sheets = part.GetBodies2(0, False), part.GetBodies2(1, False)
+    loft = win32com.client.CastTo(part.FeatureByName("DSH_Duct_Surface"), "IFeature")
+    return (
+        os.path.normcase(os.path.realpath(model.GetPathName())) ==
+        os.path.normcase(os.path.realpath(path))
+        and not model.GetSaveFlag() and model.GetType() == 1
+        and model.GetConfigurationCount() == 1
+        and (solids is None or isinstance(solids, (tuple, list)) and len(solids) == 0)
+        and isinstance(sheets, (tuple, list)) and len(sheets) == 1
+        and loft is not None and loft.GetTypeName2() == "BlendRefSurface"
+        and isinstance(geometry_sha256, str) and bool(geometry_sha256)
+        and _sha256(path) == geometry_sha256)
 
 
 class SurfaceModel(SWModel):
@@ -36,10 +58,11 @@ class SurfaceModel(SWModel):
                     if _feature_type_name(f) == "BlendRefSurface"}
 
         previous = surface_lofts().keys()
+        part = win32com.client.CastTo(self.model, "IPartDoc")
         self.model.ClearSelection2(True)
         try:
             for i, name in enumerate(sketch_names):
-                feature = self.model.FeatureByName(name)
+                feature = part.FeatureByName(name)
                 if not _is_sketch_feature(feature) or not feature.Select2(i > 0, 1):
                     raise RuntimeError("无法选中放样截面草图：" + name)
             if self.model.SelectionManager.GetSelectedObjectCount2(1) != len(sketch_names):

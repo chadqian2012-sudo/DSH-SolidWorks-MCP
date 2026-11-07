@@ -13,6 +13,7 @@ class SyncTests(unittest.TestCase):
             profile=dsh/'profiles'/'webots-test';profile.mkdir(parents=True);(profile/'package.json').write_text('{"dependencies":{"dsh-engineering-ui":"file:./node_modules/dsh-engineering-ui"}}')
             shutil.copy2(REPO/'sync-to-dsh.ps1',source/'sync-to-dsh.ps1')
             tools=source/'engineering'/'tools';tools.mkdir(parents=True)
+            shutil.copy2(REPO/'engineering'/'tools'/'profile-manifest.ps1', tools)
             (tools/'code.py').write_text('new code')
             (state/'code.py').write_text('old code')
             runtime=['webots_state.json','webots_jobs.sqlite3','webots_jobs.sqlite3-wal','webots_jobs.sqlite3-shm','webots_instance.lock','mode_state.json']
