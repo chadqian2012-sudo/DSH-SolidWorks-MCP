@@ -29,6 +29,7 @@ if (-not (Test-Path $WebProfile)) {
   exit 1
 }
 Say "[OK] Web profile: $WebProfile" Green
+$pkg = Read-DshProfileManifest $ProfilePkg
 
 # 1. host-layer permission preset —— 【问题2 修复】不再注入 SW单行模式
 Say "[1/3] Checking host-layer permission presets ..." Yellow
@@ -51,7 +52,6 @@ Say "      copied to $PluginDst" Green
 
 # 3. register in profile
 Say "[3/3] Registering plugin in profile package.json ..." Yellow
-$pkg = Get-Content $ProfilePkg -Raw -Encoding UTF8 | ConvertFrom-Json
 $deps = [ordered]@{}
 foreach ($p in $pkg.dependencies.PSObject.Properties) { $deps[$p.Name] = $p.Value }
 $deps["dsh-engineering-ui"] = "file:./node_modules/dsh-engineering-ui"

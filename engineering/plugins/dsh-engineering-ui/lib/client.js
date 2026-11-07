@@ -44,6 +44,73 @@ window.__ModuleLoader__.load({
     var useEffect = React.useEffect;
     var useRef = React.useRef;
     var h = React.createElement;
+
+    // 用户输入的令牌仅留在当前页面内存，并发请求共用一个密码输入框。
+    var engSessionToken = '';
+    var engTokenDialog = null;
+    var engAuthRequests = 0;
+    function engRequestToken() {
+      if (engTokenDialog) return engTokenDialog;
+      engTokenDialog = new Promise(function (resolve) {
+        var dialog = document.createElement('dialog');
+        dialog.className = 'eng-guide-dlg';
+        dialog.style.cssText = 'padding:22px;width:min(90vw,440px);color:var(--dsw-alias-label-primary,#1f2328)';
+        dialog.setAttribute('aria-labelledby', 'eng-token-title');
+        dialog.innerHTML = '<form method="dialog" style="display:grid;gap:12px">'
+          + '<strong id="eng-token-title">工程模式需要本机令牌</strong>'
+          + '<label for="eng-session-token">输入已配置的令牌。仅保留在当前页面，刷新后清除。</label>'
+          + '<input id="eng-session-token" type="password" autocomplete="off" required autofocus style="width:100%;box-sizing:border-box;padding:8px">'
+          + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+          + '<button class="eng-conn-btn" value="confirm">授权本页</button>'
+          + '<button class="eng-conn-btn alt" value="cancel" formnovalidate>取消</button></div></form>';
+        var input = dialog.querySelector('input');
+        dialog.addEventListener('close', function () {
+          var value = dialog.returnValue === 'confirm' ? input.value : '';
+          input.value = '';
+          dialog.returnValue = '';
+          dialog.remove();
+          engSessionToken = value;
+          resolve(value || null);
+        }, { once: true });
+        dialog.addEventListener('keydown', function (event) {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          event.stopPropagation();
+          dialog.close();
+        });
+        document.body.appendChild(dialog);
+        dialog.showModal();
+      });
+      return engTokenDialog;
+    }
+
+    async function engFetch(url, options) {
+      var target = new URL(url, window.location.href);
+      if (target.origin !== window.location.origin || target.pathname.indexOf('/dsh-engineering-ui/') !== 0) {
+        return fetch(url, options);
+      }
+      engAuthRequests++;
+      try {
+        var token = engSessionToken;
+        function request(value) {
+          var headers = new Headers(options && options.headers);
+          if (value) headers.set('x-dsh-engineering-token', value);
+          return fetch(url, Object.assign({}, options, { headers: headers, redirect: 'error' }));
+        }
+        var response = await request(token);
+        if (response.status !== 403) return response;
+        var error;
+        try { error = await response.clone().json(); } catch (e) { return response; }
+        if (!error || error.code !== 'ENGINEERING_TOKEN_REQUIRED') return response;
+        var next = engSessionToken !== token ? engSessionToken : await engRequestToken();
+        if (!next) return response;
+        return await request(next);
+      } finally {
+        engAuthRequests--;
+        if (engAuthRequests === 0) engTokenDialog = null;
+      }
+    }
+
     // ── 原始事件 → 显示事件（字段映射层；host 下发原始 DSH 事件）──
     // 真实持久化字段：tool/call → data.name / data.arguments；
     //               tool/result → data.message.content / data.error；
@@ -4588,7 +4655,7 @@ window.__ModuleLoader__.load({
     /** 【启动按钮】显式启动 SW / CAD（用户主动点击才走这里）。 */
     function launchConn(target, cb) {
       try {
-        fetch('/dsh-engineering-ui/conn-launch', {
+        engFetch('/dsh-engineering-ui/conn-launch', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ target: target })
@@ -4602,7 +4669,7 @@ window.__ModuleLoader__.load({
     /** 【发给模型】把启动日志作为一条用户消息投递给当前会话的模型。 */
     function sendLogToModel(target, logText, sessionId, cb) {
       try {
-        fetch('/dsh-engineering-ui/conn-diagnose', {
+        engFetch('/dsh-engineering-ui/conn-diagnose', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
@@ -5026,7 +5093,7 @@ window.__ModuleLoader__.load({
         if (S.rootSaving) return;
         patch({ rootSaving: true, rootMsg: null });
         try {
-          fetch('/dsh-engineering-ui/settings', {
+          engFetch('/dsh-engineering-ui/settings', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ key: 'delivery_root', value: S.root })
@@ -5888,7 +5955,7 @@ window.__ModuleLoader__.load({
         });
       }
       useEffect(function () {
-        fetch('/dsh-engineering-ui/persona')
+        engFetch('/dsh-engineering-ui/persona')
           .then(function (r) { return r.json(); })
           .then(function (j) {
             if (j && j.ok) patch({ text: String(j.text || ''), loaded: true });
@@ -5899,7 +5966,7 @@ window.__ModuleLoader__.load({
       var save = function () {
         if (S.saving) return;
         patch({ saving: true, saved: null, err: null });
-        fetch('/dsh-engineering-ui/persona', {
+        engFetch('/dsh-engineering-ui/persona', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ text: S.text }),
@@ -6899,7 +6966,7 @@ window.__ModuleLoader__.load({
           patch({ busy: false, err: String(m || '分析失败') });
         };
 
-        fetch('/dsh-engineering-ui/side-chat', {
+        engFetch('/dsh-engineering-ui/side-chat', {
           method: 'POST',
           headers: { 'content-type': 'application/json', 'accept': 'text/event-stream' },
           body: JSON.stringify({

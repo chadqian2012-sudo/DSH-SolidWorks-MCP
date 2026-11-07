@@ -5,6 +5,8 @@ simulation_report.py — 结构化仿真报告生成
 将 FEA 求解结果、几何门禁结果、设计参数汇总为标准 JSON 报告。
 报告可作为 Agent 上下文输入，也可导出为 Markdown 摘要。
 """
+from __future__ import annotations
+
 import json
 import os
 import time

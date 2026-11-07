@@ -132,10 +132,12 @@ function harness(handles = {}) {
     userQuestions: { ask(request) { return new Promise((resolve, reject) => asks.push({ request, resolve, reject })); } },
   };
   const dispose = apply(ctx);
-  async function request(route, payload, method = payload ? 'POST' : 'GET') {
+  async function request(route, payload, method = payload ? 'POST' : 'GET', headers = {}, remoteAddress = '127.0.0.1') {
     const req = Readable.from(payload ? [JSON.stringify(payload)] : []);
     req.url = '/dsh-engineering-ui' + route;
     req.method = method;
+    req.headers = headers;
+    req.socket = { remoteAddress };
     let body;
     const res = { statusCode: 200, setHeader() {}, end(text) { body = JSON.parse(text); } };
     await routes.get(req.url.split('?')[0])(req, res);
@@ -144,6 +146,107 @@ function harness(handles = {}) {
   hooks.all = (name) => hooks.get(name) || [];
   return { ctx, root, routes, hooks, asks, dispose, request };
 }
+
+test('文件令牌按当前状态目录生效，环境令牌优先，普通轮询不被限速', async () => {
+  const temp = mkdtempSync(path.join(tmpdir(), 'engineering-route-auth-'));
+  const keys = ['DSH_HOME', 'DSH_STATE_DIR', 'DSH_ENGINEERING_TOKEN'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  const tools = path.join(temp, '.agent-presets', 'engineering', 'tools');
+  const state = path.join(temp, 'state');
+  mkdirSync(tools, { recursive: true });
+  mkdirSync(path.join(state, '.defense'), { recursive: true });
+  process.env.DSH_HOME = temp;
+  process.env.DSH_STATE_DIR = state;
+  delete process.env.DSH_ENGINEERING_TOKEN;
+  const h = harness();
+  try {
+    const payload = { text: 'isolated fixture' };
+    assert.equal((await h.request('/persona', payload)).status, 200, '未配置令牌时保留本机调用');
+    const tokenFile = path.join(state, '.defense', 'local.token');
+    writeFileSync(tokenFile, 'fixture-file-token\n');
+    for (const route of ['/persona', '/settings', '/conn-launch', '/conn-diagnose', '/defense/sign', '/side-chat']) {
+      assert.equal((await h.request(route, payload)).status, 403, route + ' 必须拒绝缺失令牌');
+    }
+    const headers = { 'x-dsh-engineering-token': 'fixture-file-token' };
+    const denied = await h.request('/persona', payload, 'POST', { 'x-dsh-engineering-token': 'wrong' });
+    assert.equal(denied.status, 403);
+    assert.equal(denied.code, 'ENGINEERING_TOKEN_REQUIRED');
+    assert.equal((await h.request('/persona', payload, 'POST', headers)).status, 200);
+    assert.equal((await h.request('/persona', payload, 'POST', { ...headers, origin: 'https://example.invalid' })).status, 403);
+    assert.equal((await h.request('/persona', payload, 'POST', headers, '192.0.2.1')).status, 403);
+    for (const content of ['', ' \n\t']) {
+      writeFileSync(tokenFile, content);
+      assert.equal((await h.request('/persona', payload)).status, 403, '空令牌文件不能退化为未配置');
+    }
+    rmSync(tokenFile);
+    mkdirSync(tokenFile);
+    assert.equal((await h.request('/persona', payload)).status, 403, '令牌路径不可读时不得放行');
+    rmSync(tokenFile, { recursive: true });
+    writeFileSync(tokenFile, 'fixture-file-token');
+    process.env.DSH_ENGINEERING_TOKEN = 'fixture-env-token';
+    assert.equal((await h.request('/persona', payload, 'POST', headers)).status, 403, '环境令牌覆盖文件令牌');
+    assert.equal((await h.request('/persona', payload, 'POST', { 'x-dsh-engineering-token': 'fixture-env-token' })).status, 200);
+    delete process.env.DSH_ENGINEERING_TOKEN;
+    rmSync(tokenFile);
+    assert.equal((await h.request('/persona', payload)).status, 200);
+    for (let i = 0; i < 125; i++) {
+      assert.equal((await h.request('/defense/info')).status, 200, '普通轮询不应占用防线限速桶');
+    }
+  } finally {
+    h.dispose();
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+    }
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('UI 用户输入令牌后重试，令牌仅用于同源工程请求和当前标签会话', async () => {
+  const client = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8');
+  const helper = client.slice(client.indexOf("var engSessionToken = ''"), client.indexOf('// ── 原始事件'));
+  const calls = [];
+  let prompts = 0, answer = 'fixture-ui-token', genericDenial = false;
+  const window = {
+    location: new URL('http://127.0.0.1:9000/'),
+  };
+  const fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    const authorized = new Headers(options.headers).get('x-dsh-engineering-token') === 'fixture-ui-token';
+    return Response.json(authorized && !genericDenial ? { ok: true } :
+      (genericDenial ? { ok: false } : { code: 'ENGINEERING_TOKEN_REQUIRED' }),
+      { status: authorized && !genericDenial ? 200 : 403 });
+  };
+  const { engFetch, clearToken } = new Function('window', 'fetch', 'Headers', 'URL', 'ask', helper
+    + ';engRequestToken=async function(){engSessionToken=(await ask())||"";return engSessionToken;};'
+    + 'return {engFetch,clearToken:()=>{engSessionToken="";}};')(
+    window, fetch, Headers, URL, () => { prompts++; return answer; });
+  const options = { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"text":"fixture"}' };
+  assert.equal((await engFetch('/dsh-engineering-ui/persona', options)).status, 200);
+  assert.equal(prompts, 1);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].options.body, options.body, '授权重试必须保留原 POST 内容');
+  assert.equal(calls[1].options.headers.get('content-type'), 'application/json');
+  assert.equal(calls[1].options.redirect, 'error', '不得向跳转目标泄漏令牌');
+  assert.equal((await engFetch('/dsh-engineering-ui/persona')).status, 200);
+  assert.equal(prompts, 1, '当前标签的后续请求直接使用已输入令牌');
+  await engFetch('//example.invalid/dsh-engineering-ui/persona');
+  assert.equal(new Headers(calls.at(-1).options.headers).has('x-dsh-engineering-token'), false);
+  genericDenial = true;
+  assert.equal((await engFetch('/dsh-engineering-ui/persona')).status, 403);
+  assert.equal(prompts, 1, '跨站或无效令牌文件的拒绝不得误弹输入框');
+  genericDenial = false;
+  clearToken(); answer = null;
+  const beforeCancel = calls.length;
+  assert.equal((await engFetch('/dsh-engineering-ui/persona')).status, 403);
+  assert.equal(calls.length, beforeCancel + 1, '用户取消后不得重试');
+  answer = 'wrong';
+  assert.equal((await engFetch('/dsh-engineering-ui/persona')).status, 403);
+  answer = 'fixture-ui-token';
+  assert.equal((await engFetch('/dsh-engineering-ui/persona')).status, 200, '旧令牌失效时允许用户更新');
+  for (const route of ['persona', 'settings', 'conn-launch', 'conn-diagnose', 'side-chat']) {
+    assert.equal(client.includes("fetch('/dsh-engineering-ui/" + route + "'"), false, route + ' 必须走授权请求入口');
+  }
+});
 
 test('全部 32 条 HTTP 路由与守卫钩子注册，且可完整卸载', () => {
   const h = harness();

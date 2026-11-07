@@ -7,7 +7,7 @@
  * 本测试锁三件事：
  *   ① 三条路由真的注册了、方法/参数校验正确；
  *   ② 判定逻辑【不在 JS 里】—— 必须转调 tools/env_check.py（单一事实源）；
- *   ③ 环境不全时（没有 Python 3.6+），接口必须给出【可操作】的结构化结论，
+ *   ③ 环境不全时（没有 Python 3.8+、64 位），接口必须给出【可操作】的结构化结论，
  *      而不是一句"失败"，更不能静默返回 ok:true 骗前端显示成"全绿"。
  *
  * 运行：node --test test/env-check.test.mjs
@@ -81,8 +81,8 @@ test('③ 没有可用 Python 时必须给出【可操作】结论，不得假�
   const seg = HOST_SRC.slice(i, i + 2400);
   assert.ok(/status:\s*'bad'/.test(seg), 'Python 不可用时 status 必须是 bad');
   assert.ok(/hint:/.test(seg), '必须给 hint（怎么修），不能只报错');
-  assert.ok(/3\.5|3\.6|f-string/.test(seg),
-    'hint 应点明"旧版 Python 不支持 f-string"这个真实根因');
+  assert.ok(/3\.8|32 位/.test(seg),
+    'hint 应点明最低版本与位数要求');
   assert.ok(!/return\s*\{\s*ok:\s*true\s*\}\s*;\s*\/\/\s*降级/.test(seg),
     '不得用 ok:true 假装通过');
 });
@@ -98,6 +98,42 @@ test('④ resolvePython 必须校验版本并且认 py -3', () => {
   const pyIdx = seg.indexOf("'py'");
   const pyIdx2 = seg.indexOf("'python'");
   assert.ok(pyIdx > 0 && pyIdx2 > pyIdx, "py 必须排在 python 之前（微机房踩过的坑）");
+});
+
+test('解释器须满足 3.8+、64 位，执行固定实际路径并随设置切换', () => {
+  const calls = [];
+  let version = '3.8.10', bits = 64;
+  const process = { env: {} };
+  const runtime = vm.runInNewContext(
+    HOST_SRC.slice(HOST_SRC.indexOf('  const PYTHON_MIN_MAJOR'),
+      HOST_SRC.indexOf('  /** 触发一次真实探测')) +
+      '\n({ probePythonExe, resolvePython })',
+    { process, findToolsDir: () => null,
+      spawnSync(exe, args, options) {
+        calls.push({ exe, args, options });
+        return { status: 0, stdout: JSON.stringify({ version, bits,
+          executable: exe === 'py' ? 'D:/Python38/python.exe' : exe,
+          pywin32: true }) };
+      } },
+  );
+  for (const [v, b, expected] of [
+    ['3.6.9', 64, false], ['3.7.9', 64, false], ['3.8.10', 32, false],
+    ['3.8.10', 64, true], ['3.15.2', 64, true],
+  ]) {
+    version = v; bits = b;
+    assert.equal(runtime.probePythonExe('py').ok, expected, `${v}, ${b} bit`);
+    assert.equal(calls.at(-1).args[0], '-3');
+  }
+  runtime.probePythonExe('C:/Windows/py.exe');
+  assert.equal(calls.at(-1).args[0], '-3', '完整路径 py.exe 也须显式选择 Python 3');
+  assert.equal(runtime.resolvePython(), 'D:/Python38/python.exe');
+  const count = calls.length;
+  assert.equal(runtime.resolvePython(), 'D:/Python38/python.exe');
+  assert.equal(calls.length, count, '相同设置使用已探测的解释器');
+  process.env.DSH_PYTHON = 'E:/Python/python.exe';
+  assert.equal(runtime.resolvePython(), process.env.DSH_PYTHON,
+    '指定解释器变化时必须重新探测');
+  assert.equal(runtime.resolvePython(true).chosen, process.env.DSH_PYTHON);
 });
 
 test('⑤ /settings 写入口必须列入敏感路由（能改路径 = 高副作用）', () => {
@@ -136,7 +172,7 @@ test('⑨ 客户端：交付目录可在设置里改，且走 /settings', () => 
   const i = CLIENT_SRC.indexOf('function EngEnvPanel');
   const seg = CLIENT_SRC.slice(i, i + 9000);
   assert.ok(seg.includes("key: 'delivery_root'"), '必须能保存 delivery_root');
-  assert.ok(seg.includes("fetch('/dsh-engineering-ui/settings'"), '必须走 /settings 路由');
+  assert.ok(seg.includes("engFetch('/dsh-engineering-ui/settings'"), '保存设置须通过支持本机令牌的 /settings 请求');
 });
 
 test('⑩ 所有 Python 子进程必须强制 UTF-8（否则设置页中文全乱码）', () => {

@@ -2,7 +2,7 @@
 
 本分支让 DeepSeek V4.1 Flash 在工程模式下读取图纸，调用 SOLIDWORKS 建模。PDF 和图片按页查看。DXF 可读原图元和尺寸标注。DWG 先转为 DXF，转换结果无法解析时请从原 CAD 导出标准 DXF 或 PDF。模型会集中询问影响建模的缺失尺寸。[插件调用方法和参数](engineering/skills/mode-selection/SKILL.md#图纸--整件零件deepseek-v41-flash)
 
-风管命令创建两端开口、同轴平行的圆转椭圆放样曲面。续改时，在原草图上调整椭圆出口宽度，并复核入口直径、出口高度和风管长度。这个命令用于零厚度几何，不提供材料或强度结论。其他零件继续使用原有草图、拉伸和切除工具。[放样参考实现（MIT）](https://github.com/qdaia/Auto-SolidWorks/blob/1bf68f425a1b541f597beaa1842cf2bc1bb9feb8/src/CadModeling.Executor.SolidWorks/NativeFeatures.cs#L133)
+风管命令创建两端开口、同轴平行的圆转椭圆放样曲面。续改时，在原草图上调整椭圆出口宽度，并复核入口直径、出口高度和风管长度。如果一个零件包含多个配置，命令会在修改草图前停止。这个命令用于零厚度几何，不提供材料或强度结论。其他零件继续使用原有草图、拉伸和切除工具。[放样参考实现（MIT）](https://github.com/qdaia/Auto-SolidWorks/blob/1bf68f425a1b541f597beaa1842cf2bc1bb9feb8/src/CadModeling.Executor.SolidWorks/NativeFeatures.cs#L133)
 
 图纸工具需要 `Pillow ezdxf matplotlib`。PDF 需要 Poppler，DWG 需要 LibreDWG 的 `dwg2dxf`。建模还需 Windows 桌面版 SOLIDWORKS、零件模板及同一 Python 环境里的 `pywin32`。模型选 `deepseek-flash`。[DeepSeek 视觉输入说明](https://api-docs.deepseek.com/guides/vision/)
 
@@ -29,7 +29,7 @@ Windows 上若 `pwsh` 在执行第一条命令前报告 `grantWrite ... Win32 5`
 |------|-----|
 | 目标平台 | DeepSeek Harness **0.2.x**（Electron 桌面版 / `dsh web`） |
 | 预设 ID | `engineering` · 显示名「工程模式」· `order: 4` |
-| UI 插件 | `dsh-engineering-ui` **v1.4.1** |
+| UI 插件 | `dsh-engineering-ui` **v1.4.2** |
 | 技能 | **7** 个 |
 | 门禁 / 桥接脚本 | **12** 个核心脚本 + **14** 个物理模块 |
 | 回归测试 | **30** 个 Python + **12** 个插件测试 |

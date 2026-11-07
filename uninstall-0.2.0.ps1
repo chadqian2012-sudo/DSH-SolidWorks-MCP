@@ -48,7 +48,7 @@ function Zap([string]$Path) {
             Move-Item -LiteralPath $Path -Destination $alt -Force -ErrorAction Stop
             Say ("  [note] delete was blocked; renamed to " + (Split-Path $alt -Leaf) + " (safe to delete by hand)")
             return $true
-        } catch { Say ("  [X] could not remove " + $Path + " :: " + $_.Exception.Message); return $false }
+        } catch { Say ("  [X] could not remove " + $Path + " :: " + $_.Exception.Message); $script:Bad++; return $false }
     }
 }
 
@@ -68,6 +68,10 @@ foreach ($p in $allProfiles) {
 }
 if ($targets.Count -eq 0) { Say "[X] nothing to do"; WriteNoBom $LogPath $script:Log.ToString(); exit 1 }
 Say ("targets = " + ($targets -join ', '))
+$packages = @{}
+foreach ($prof in $targets) {
+    $packages[$prof] = Read-DshProfileManifest (Join-Path (Join-Path $ProfilesDir $prof) 'package.json')
+}
 
 foreach ($prof in $targets) {
     $Web          = Join-Path $ProfilesDir $prof
@@ -81,28 +85,26 @@ foreach ($prof in $targets) {
     foreach ($n in @($UI_NAME, $SWSL_NAME)) {
         $d = Join-Path $NodeModules $n
         if (Test-Path -LiteralPath $d) {
-            if (Zap $d) { Say ("  [OK] removed node_modules\" + $n) } else { $script:Bad++ }
+            if (Zap $d) { Say ("  [OK] removed node_modules\" + $n) }
         } else { Say ("  [SKIP] node_modules\" + $n + " absent") }
     }
     if ((Test-Path $NodeModules) -and ((Get-ChildItem -Force $NodeModules -ErrorAction SilentlyContinue).Count -eq 0)) {
-        [void](Zap $NodeModules); Say "  [OK] removed empty node_modules"
+        if (Zap $NodeModules) { Say "  [OK] removed empty node_modules" }
     }
 
     # 2. manifest
-    if (Test-Path $ProfilePkg) {
-        $pkg = ([System.IO.File]::ReadAllText($ProfilePkg).TrimStart([char]0xFEFF)) | ConvertFrom-Json
-        $deps = [ordered]@{}
-        foreach ($p in $pkg.dependencies.PSObject.Properties) {
-            if ($p.Name -ne $UI_NAME -and $p.Name -ne $SWSL_NAME) { $deps[$p.Name] = $p.Value }
-        }
-        $bundles = @()
-        foreach ($b in $pkg.dsh.profile.bundles) {
-            if ($b -ne $UI_NAME -and $b -ne $SWSL_NAME) { $bundles += $b }
-        }
-        Set-DshProfilePluginEntries $pkg $deps $bundles
-        WriteNoBom $ProfilePkg (($pkg | ConvertTo-Json -Depth 100) + "`n")
-        Say ("  [OK] package.json cleaned; bundles = " + ($bundles -join ', '))
-    } else { Say ("  [WARN] no " + $ProfilePkg); $script:Bad++ }
+    $pkg = $packages[$prof]
+    $deps = [ordered]@{}
+    foreach ($p in $pkg.dependencies.PSObject.Properties) {
+        if ($p.Name -ne $UI_NAME -and $p.Name -ne $SWSL_NAME) { $deps[$p.Name] = $p.Value }
+    }
+    $bundles = @()
+    foreach ($b in $pkg.dsh.profile.bundles) {
+        if ($b -ne $UI_NAME -and $b -ne $SWSL_NAME) { $bundles += $b }
+    }
+    Set-DshProfilePluginEntries $pkg $deps $bundles
+    WriteNoBom $ProfilePkg (($pkg | ConvertTo-Json -Depth 100) + "`n")
+    Say ("  [OK] package.json cleaned; bundles = " + ($bundles -join ', '))
 
     # 3. cordis.patch.yml
     if (Remove-DshLegacyPermissionPreset $ProfilePatch) {
@@ -115,7 +117,7 @@ foreach ($prof in $targets) {
 if ($Shared) {
     Step "shared data"
     if (Test-Path $DataDir) { if (Zap $DataDir) { Say ("  [OK] removed " + $DataDir) } }
-    foreach ($s in @('assembly-orchestration','cad-workflow','mode-selection','physics-in-loop','solidworks-bridge','sw-design','sw-to-cad')) {
+    foreach ($s in @('assembly-orchestration','cad-workflow','mode-selection','physics-in-loop','solidworks-bridge','sw-design','sw-to-cad','webots-simulation')) {
         $d = Join-Path $UserSkills $s
         if (Test-Path $d) { if (Zap $d) { Say ("  [OK] removed skill " + $s) } }
     }

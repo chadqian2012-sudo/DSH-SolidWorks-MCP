@@ -13,6 +13,8 @@ fea_solver.py — 有限元求解器适配层
 
 本模块封装所有后端的统一调用接口。
 """
+from __future__ import annotations
+
 import os
 import json
 import subprocess

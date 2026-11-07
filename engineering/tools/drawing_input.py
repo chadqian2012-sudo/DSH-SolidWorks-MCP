@@ -89,6 +89,8 @@ def read_dxf(source, result, output_dir, preview_limit):
                 item["weights"] = [float(w) for w in entity.weights]
             if kind == "MTEXT":
                 item["raw_text"] = entity.text
+            if kind in ("TEXT", "MTEXT"):
+                item["plain_text"] = entity.plain_text()
             if kind == "DIMENSION":
                 geometry = entity.get_geometry_block()
                 item["rendered_text"] = []
@@ -98,7 +100,7 @@ def read_dxf(source, result, output_dir, preview_limit):
                     layer = doc.layers.get(part.dxf.layer) if part.dxf.layer in doc.layers else None
                     if part.dxf.get("invisible") or layer and (layer.is_off() or layer.is_frozen()):
                         continue
-                    item["rendered_text"].append(part.plain_text() if part.dxftype() == "MTEXT" else part.dxf.text)
+                    item["rendered_text"].append(part.plain_text())
                 if entity.dxf.get("dimstyle", "STANDARD") in doc.dimstyles:
                     item["dimension_style_overrides"] = {
                         k: json_value(v) for k, v in entity.override().dimstyle_attribs.items()}
@@ -125,6 +127,8 @@ def read_dxf(source, result, output_dir, preview_limit):
     styles = [{k: json_value(v) for k, v in style.dxf.all_existing_dxf_attribs().items()} for style in doc.dimstyles]
     with evidence_path.open("x", encoding="utf-8") as evidence:
         json.dump({"entities": entities, "dimension_styles": styles,
+                   "block_definitions": [{k: json_value(v) for k, v in block.block.dxf.all_existing_dxf_attribs().items()}
+                                         for block in blocks],
                    "source_warnings": result["warnings"]}, evidence, ensure_ascii=False)
     if len(result["warnings"]) > 8:
         result["warnings"] = result["warnings"][:7] + [
@@ -139,7 +143,7 @@ def read_dxf(source, result, output_dir, preview_limit):
             continue
         if entity["type"] == "DIMENSION" and not entity.get("rendered_text"):
             continue
-        text = " / ".join(entity.get("rendered_text", [])) or str(entity.get("raw_text", entity["attributes"].get("text", "")))
+        text = " / ".join(entity.get("rendered_text", [])) or entity.get("plain_text", "")
         text = re.sub(r"(?<!\\)\\U\+[0-9A-Fa-f]{4}(?![0-9A-Fa-f])",
                       lambda match: (decode_dxf_unicode(match.group())
                                      if not 0xD800 <= int(match.group()[3:], 16) <= 0xDFFF else match.group()), text)
@@ -267,7 +271,7 @@ def prepare(source, output_dir, dwg2dxf=None, preview_limit=3, page=None):
     for page in pages:
         prefix = output_dir / ("page-%04d" % page)
         image = prefix.with_suffix(".png")
-        run([programs["pdftoppm"], "-f", str(page), "-l", str(page), "-singlefile", "-r", "150", "-png", str(source), str(prefix)])
+        run([programs["pdftoppm"], "-f", str(page), "-l", str(page), "-singlefile", "-cropbox", "-r", "150", "-png", str(source), str(prefix)])
         if not image.is_file() or image.stat().st_size == 0:
             raise RuntimeError("PDF 页面渲染失败: " + str(page))
         text = run([programs["pdftotext"], "-f", str(page), "-l", str(page), "-layout", "-enc", "UTF-8", str(source), "-"]).stdout.decode("utf-8", "replace").strip("\f\n\r ")

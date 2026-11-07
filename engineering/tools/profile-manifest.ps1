@@ -1,3 +1,13 @@
+function Read-DshProfileManifest {
+    param([string]$Path)
+    $text = [System.IO.File]::ReadAllText($Path)
+    $package = $text | ConvertFrom-Json
+    if ($package -isnot [pscustomobject] -or -not $text.TrimStart().StartsWith('{')) {
+        throw ("profile manifest must contain a JSON object: " + $Path)
+    }
+    return $package
+}
+
 # Update only plugin registration fields; preserve every other profile setting.
 function Set-DshProfilePluginEntries {
     param($Package, $Dependencies, [object[]]$Bundles)

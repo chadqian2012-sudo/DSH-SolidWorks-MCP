@@ -13,6 +13,8 @@ geometry_gate.py — 几何门禁检查
 
 注意：本模块基于 STEP 几何分析，不依赖外部 CAD 软件。
 """
+from __future__ import annotations
+
 import math
 from typing import Any, Optional
 
