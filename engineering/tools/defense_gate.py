@@ -372,6 +372,57 @@ def room_type_requires_physics(rtype):
         return False
     return True
 
+
+def delivery_requirements(state=None, room=None):
+    """只从本任务原文决定交付要求，估算和历史工况不能升级用户要求。"""
+    st = state if isinstance(state, dict) else (
+        _read_json(os.path.join(STATE_DIR, "workflow_state.json")) or {})
+    task = str(st.get("task") or "").strip()
+    recorded_rooms = (st.get("subagent_config") or {}).get("rooms") or []
+    recorded_room = any((row.get("name") or row.get("room")) == room if isinstance(row, dict)
+                        else bool(row and row[0] == room) for row in recorded_rooms)
+    if not task and room and recorded_room:
+        return {"material": True, "physics": True, "source": "legacy_unknown"}
+    room_text = str(room or "")
+    if room and st.get("task_id"):
+        plan_file = (st.get("mode2_flow") or {}).get("plan_file")
+        plan = _read_json(plan_file) if plan_file else {}
+        if isinstance(plan, dict) and plan.get("task_id") == st["task_id"]:
+            for row in (plan.get("subagent_plan") or {}).get("rooms") or []:
+                if row.get("name") == room and not row.get("auto_added"):
+                    room_text += "\n" + str(row.get("why") or "")
+    text = "\n".join((task, str(st.get("context") or "") if task else "", room_text))
+    physical = r"(?:强度|疲劳|应力|刚度|安全系数|载荷|负载|承重|承载|寿命|物理|力学|有限元|\bFEA\b)"
+    check = r"(?:校核|验算|分析|验证|计算|评估|求解|优化|检验)"
+    physics_intent = (check + r".{0,12}" + physical + "|" + physical + r".{0,12}" + check
+                      + r"|有限元|\bFEA\b|载荷工况|(?:载荷|负载|承重|承载|寿命|安全系数)\s*[:：=≥≤]?\s*\d")
+    negative_physics = (r"(?:无需|无须|不需要|不用|不做|不要|不考虑|不要求|别|暂不|\bno\b|\bwithout\b)"
+                        r"(?:再|额外|设置|进行|做|计算|分析|校核|考虑|材料|材质|和|及|与|/|\s)*" + physical)
+    # 名称里出现“载荷传感器”不等于要验算；必须有分析动作或数值工况。
+    requested_physics = [c for c in re.split(r"[，,。；;\n]|但是|但|\bbut\b", text, flags=re.I)
+                         if re.search(physics_intent, c, re.I) and not re.search(negative_physics, c, re.I)]
+    physics = bool(requested_physics)
+    optional_material = bool(re.search(
+        r"(?:材料|材质).{0,6}(?:可以不|可不|未指定|不指定|暂不|先不管|随意|不限|无要求|待定|\bTBD\b|[:：]\s*无)|"
+        r"(?:不指定|无需|不需要|不用|没有|不要求)(?:任何|具体|设置|指定|提供|\s)*(?:材料|材质)", text, re.I))
+    material_text = re.sub(r"(?:不要|不用|别用|不采用|不选用)[^，,。；;\n]*?"
+                           r"(?=改用|改成|改为|但|而|[，,。；;\n]|$)", "", text)
+    material_intent = bool(re.search(
+        r"(?:材料|材质)(?:\s+|\s*(?:[:：=]|为|是|采用|选用|选|改成|改为|指定|必须|要求))|"
+        r"(?:指定|选用|采用|设置|赋予|要求|需要)\s*(?:具体|真实|某种)?(?:材料|材质)|赋材(?:为|[:：=])", material_text))
+    from physics import material_db
+    names = {str(n) for key, info in [*material_db.ALL_MATERIALS.items(), *material_db.COMMON_MATERIALS.items()]
+             for n in [key, info.get("name") or "", *(info.get("aliases") or [])]
+             if n and not str(n).isdigit()}
+    material_named = any(re.search(r"(?<![A-Za-z0-9])" + re.escape(n) + r"(?![A-Za-z0-9])", material_text, re.I)
+                         for n in names)
+    mass_required = bool(re.search(r"(?:计算|校核|测量|验证).{0,8}(?:重量|密度|质量属性)|"
+                                   r"(?:重量|密度|质量属性)\s*[:：=≤≥]?\s*\d", text))
+    material = physics or mass_required or material_named or (not optional_material and material_intent)
+    return {"material": bool(material), "physics": physics,
+            "room_physics": any(c in room_text for c in requested_physics),
+            "source": "current_task"}
+
 # 房间类型 → DSVA 领域 ID
 TYPE_TO_DOMAIN = {
     "structural": "structural",
@@ -944,13 +995,16 @@ def write_material_attestation(part_path, info):
     return rec
 
 
-def check_material_attestation(part_path):
+def check_material_attestation(part_path, required=True):
     """校验单个零件的材料凭据。
 
+    required=False 仅允许未指定材料；已有显式赋材事实仍按原规则验证。
     Returns: {ok, level, reasons[], attestation?}
       ok=False → 该零件材料不可信（硬阻断）
     """
-    out = {"ok": False, "level": "BLOCK", "reasons": [], "part": str(part_path)}
+    out = {"ok": False, "level": "BLOCK", "reasons": [], "part": str(part_path),
+           "requires_user_action": True, "retryable": False,
+           "next_action": "停止重复赋材或重建；向用户说明请求材料、实际读回值与失败原因，等待材料名/数据/服务条件被确认后再继续。"}
     # ── 【Bug-09 修复】零件与凭据都要按【磁盘真实大小写】解析 ──────────────
     # 大小写不一致（.sldprt vs .SLDPRT）会让凭据查找 MISS，被误判为
     #   "未落盘"。这里先归一化到真实路径，再据此找凭据。
@@ -972,6 +1026,15 @@ def check_material_attestation(part_path):
                         break
         except Exception:
             pass
+    if not required and ((not att and not os.path.exists(attestation_path(_real_part)))
+                         or (isinstance(att, dict)
+                             and att.get("material_status") == "unspecified"
+                             and not att.get("requested_material")
+                             and not att.get("material_invalid"))):
+        out.update(ok=True, level="NOT_REQUIRED", evaluated=False, skipped=True,
+                   requires_user_action=False, next_action=None,
+                   reason="本任务未要求材料，零件未指定材料；材料与质量属性未验证")
+        return out
     if not att:
         out["reasons"].append(
             "缺少材料凭据（%s.material.json）—— 该零件未经过材料防线校验。"
@@ -1156,6 +1219,11 @@ def check_material_attestation(part_path):
             pass
     # ② 名字不同的常规路径（保留原有属性级对比）
     _cmp_target = _applied_real or _app_m
+    if required and not _req_m:
+        out["reasons"].append("材料凭据缺少请求牌号，无法证明满足本任务的材料要求。")
+    if _req_m and not _material_names_equivalent(_req_m, _cmp_target):
+        out["reasons"].append("请求材料 %r 与实际材料 %r 没有同牌号或已登记同标准别名的证据；密度相同也不能放行。"
+                              % (_req_m, _cmp_target or "未读到"))
     if _req_m and _cmp_target and _req_m.lower() != _cmp_target.lower():
         _ms = material_substitution_check(_req_m, _cmp_target, _dens)
         out["material_substitution"] = _ms
@@ -1267,8 +1335,7 @@ def check_material_attestation(part_path):
     #      记录 <零件>.material.json.sw_internal.json（不参与验签，纯事实留痕）；
     #   ② 这里回读它，与凭据自报的 attested_material 做归一化比对；
     #   ③ 两者矛盾 → 判 model_trustworthy=false 并 BLOCK（凭据不可采信）；
-    #   ④ 旁挂缺失 → 不阻断，但显式标注 sw_internal_evaluated=false，
-    #      让下游知道"这条判据没跑"，而不是静默当作通过。
+    #   ④ 要求材料却缺真实回读记录 → 无法验证，停止自动重试。
     #
     # 注意：旁挂记录【不参与签名】，因此它只作为"交叉核对的独立证人"——
     #   单靠它可以发现矛盾，但不能单靠它给出通过结论（通过仍须凭据验签成功）。
@@ -1279,6 +1346,8 @@ def check_material_attestation(part_path):
         if _swi:
             _swi_name = str(_swi.get("sw_internal_material")
                             or _swi.get("material") or "").strip()
+            if (required or _req_m) and not _swi_name:
+                out["reasons"].append("SolidWorks 材料回读名为空，无法验证指定材料。")
             _swi_dens = _swi.get("density_kg_m3")
             out["sw_internal_material"] = _swi_name or None
             try:
@@ -1286,11 +1355,7 @@ def check_material_attestation(part_path):
             except Exception:
                 _swi_dens = None
             out["sw_internal_density_kg_m3"] = _swi_dens
-            # (a) 材质名：SW 内部实测 vs 凭据自报
-            #     ⚠️ 名称差异【单独不足以定罪】：SW 会把国标牌号存在本地化库名里
-            #     （Q235 可能回读成"普通碳钢"），这属于别名而非换料。
-            #     因此名称不一致先记 WARNING；只有【密度这个物理事实】也矛盾，
-            #     或 swapi 自己都判了 matches=false，才升级为硬阻断。
+            # 名称必须有同牌号或已登记同标准别名的证据；密度相同不能证明身份。
             _name_mismatch = bool(_swi_name and _name
                                   and not _material_names_equivalent(_swi_name, _name))
             _dens_mismatch = False
@@ -1304,36 +1369,10 @@ def check_material_attestation(part_path):
                     _dens_mismatch = False
             if _name_mismatch:
                 out["sw_internal_name_mismatch"] = True
-            # 名称不同时，用【双向材料身份查询】判定这是"库名别名"还是"真换料"：
-            #   · 双向身份命中 → 两个名字指向材料库里【同一组属性】，属别名（放行+告警）；
-            #   · 只命中一侧 / 都命中但属性不同 → 无法证明是同一材料，
-            #     按 fail-closed 视为"凭据不可采信"。
-            # 为什么不用 material_substitution_check：它要求两侧都有属性才比较，
-            #   SW 回读名（"普通碳钢"）通常不在材料库里 → needs_review 而非阻断，
-            #   于是"真换料"会被降级放过（本函数原设计是给"请求 vs 已生效"用的，
-            #   两者都在库里；这里一侧是 SW 内部的本地化名，口径不同）。
-            # 判"别名"还是"真换料"，要看【当初写进 SW 的名字】与【现在回读的名字】：
-            #   · 写入名（attested_material_name / applied_name）≠ 回读名
-            #     → SW 没有保留我们写的材质，这是"凭据与实物脱节"，硬阻断；
-            #   · 没有写入名（历史旁挂记录）→ 无法证明是换料，名称差异只告警；
-            #     但【密度】这个物理事实仍然独立硬判。
-            # 为什么不拿凭据的 requested_material 直接比：请求名本身可能是库中不存在的
-            #   别名（PETG 之类），那条替代路径已由 Bug-C 的密度/属性判据覆盖；
-            #   本条要回答的是"我们写进去的那次赋值到底生效了没有"。
-            # ── 只认【能证明的证据】，不猜语义 ──────────────────────────────
-            # 名称差异本身【不足以定罪】：SW 的中文材料库里 Q235 可能显示为
-            #   "普通碳钢"，而 Q235→AISI 1020 的密度/屈服完全相同 ——
-            #   在缺少权威别名表时，纯名字比较既会误杀别名，也会漏掉同参数换牌号。
-            #   所以这里只认两类【硬证据】：
-            #     ① 密度（物理事实，由 SW 质量属性算出，凭据改不掉）；
-            #     ② 旁挂记录里 swapi 自己给出的 sw_internal_matches_request=False
-            #        （那是写入方在 SW 进程内、掌握别名映射时下的判定，最权威）。
-            #   其余情况一律降级为【显式告警】：让不一致可见、可追溯，
-            #   但不拿"我猜它可能是别名"去放行，也不拿"名字不同"去误杀。
             _swi_written = str(_swi.get("attested_material_name")
                                or _swi.get("applied_name") or "").strip()
             _declared = _swi.get("sw_internal_matches_request")
-            _sub_blocking = (_declared is False)
+            _sub_blocking = (_declared is False) or _name_mismatch
             out["sw_internal_substitution"] = {
                 "written_to_sw": _swi_written or None,
                 "read_from_sw": _swi_name or None,
@@ -1354,26 +1393,25 @@ def check_material_attestation(part_path):
                 out["reasons"].append(
                     "【A-17】凭据自报值与零件实测事实矛盾（%s）。"
                     "门禁不能只信凭据自报值，故该零件材料不可采信；"
-                    "请重新赋材并保存（凭据会随 swapi.save() 重写）。"
+                    "停止重复赋材，先确认请求牌号与实际材料身份。"
                     % "；".join(_bits))
-            elif _name_mismatch:
-                # 名称不同但属性差异在容差内 → 判为 SW 的库名别名
-                out.setdefault("warnings", []).append(
-                    "【A-17】凭据自报材料 %r 与 SolidWorks 内部回读名 %r 不同，"
-                    "但实测密度一致（%.0f kg/m³）—— 判为库名别名，不作阻断；"
-                    "若图纸要求精确牌号，请核对材质库命名。"
-                    % (str(_name), _swi_name, float(_swi_dens or _dens or 0)))
             # (b) 密度判据已并入上方 _dens_mismatch（物理事实优先于名字）
         else:
             out["sw_internal_note"] = (
                 "未找到 SW 内部材质旁挂记录（<零件>.material.json.sw_internal.json）—— "
                 "本条【未评估】零件的真实材质，不能据此认为材质已核对。")
+            if required or _req_m:
+                out["reasons"].append(out["sw_internal_note"])
     except Exception as _e_swi:
         out["sw_internal_evaluated"] = False
         out["sw_internal_error"] = repr(_e_swi)
+        if required or _req_m:
+            out["reasons"].append("SolidWorks 材料回读校验失败，无法验证指定材料：%r" % (_e_swi,))
     # (6) 未赋材兜底警告：近似匹配按 WARNING 处理，不阻断
     if not out["reasons"]:
         out["ok"] = True
+        out["requires_user_action"] = False
+        out["next_action"] = None
         out["level"] = "WARN" if att.get("approximate_match") else "PASS"
         if att.get("approximate_match"):
             out["reasons"].append("材料为近似匹配（库中无精确同名），建议核对")
@@ -1415,52 +1453,10 @@ def _read_sw_internal_sidecar(part_path):
 # ── 【A-30 / A-17 共用】材质名归一化与等价判定 ───────────────────────────────
 # 必须与 swapi._material_names_match() 同口径，否则会出现"swapi 说一致、
 #   defense_gate 说不一致"的分裂（这正是 A-22/A-30 那类"两套口径"问题）。
-_MATERIAL_NAME_SEPS = ("|", "\\", ":", "：")
-
-
-def _material_name_variants(name):
-    """材质名 → 全部可比较写法（拆段/折叠空白/忽略大小写，去重）。
-
-    【不做同义词替换】：跨标准替代（Q235 vs AISI 1020）的候选集合无交集。
-    """
-    s = str(name or "").strip()
-    if not s:
-        return []
-    out = []
-
-    def _add(x):
-        x = " ".join(str(x or "").split())
-        if x:
-            k = x.casefold()
-            if k not in out:
-                out.append(k)
-
-    _add(s)
-    for _sep in _MATERIAL_NAME_SEPS:
-        if _sep in s:
-            _parts = [p.strip() for p in s.split(_sep)]
-            _parts = [p for p in _parts if p]
-            for _i in range(1, len(_parts)):
-                _add(_sep.join(_parts[_i:]))
-            for _p in _parts:
-                _add(_p)
-    for _sep in (" - ", " – ", " — "):
-        if _sep in s:
-            _add(s.split(_sep)[-1])
-    return out
-
-
 def _material_names_equivalent(a, b):
-    """两个材质名是否指同一种材料（候选集合有交集）。
-
-    只做拆段/空白/大小写归一化，【不做模糊匹配】—— 保证跨标准替代
-    不会被这条判据悄悄放行（它仍由 _detect / cross_standard 显式拦截）。
-    """
-    _av = _material_name_variants(a)
-    _bv = _material_name_variants(b)
-    if not _av or not _bv:
-        return False
-    return bool(set(_av) & set(_bv))
+    """复用赋材所有者的精确名称/已登记同标准别名判定。"""
+    from physics.material_db import material_names_match
+    return material_names_match(a, b)
 
 
 def _material_geometry_check(att, part_path):
@@ -2810,59 +2806,8 @@ def check_domain_attestation(room):
 # ══════════════════════════════════════════════════════════════════════
 
 def _registered_artifacts(room):
-    """读台账，取本房间登记的产物（含存在性）。
-
-    路径解析见下方【A-22/A-97】说明：按候选集合 + 多键名合并。
-    """
-    # ══ 【A-22 / A-97 修复 · 路径写死】台账同样必须按【候选集合】解析 ══════
-    # 原缺陷：只读 STATE_DIR 下的单一名（artifacts_registry.json）。而写入侧
-    #   有两套命名：按任务的 artifacts_registry.<task_id>.json（artifact_registry_file()）
-    #   与历史裸名 artifacts_registry.json；另有一份工作区副本。
-    #   于是"零件明明登记了"在本函数里读不到 → _modeling_parts() 返回空 →
-    #   材料防线拿到 0 个零件 → 空集合恒真（房间被当"没有零件要校验"）。
-    # 现在：按 ① 当前任务文件 ② 裸名 ③ 同目录其它 artifacts_registry*.json
-    #   （mtime 新→旧）顺序找，【合并同一房间的登记】并去重；全都没有时
-    #   显式标注 evaluated=false，绝不静默当成"没有零件"。
-    reg = {}
-    _reg_used = []
-    try:
-        _reg_cands = []
-        _primary = artifact_registry_file()
-        for _p in (_primary,
-                   os.path.join(STATE_DIR, "artifacts_registry.json")):
-            if _p and _p not in _reg_cands:
-                _reg_cands.append(_p)
-        try:
-            _hits = []
-            for _d in (STATE_DIR,):
-                if os.path.isdir(_d):
-                    for _fn in os.listdir(_d):
-                        if re.match(r"^artifacts_registry.*\.json$", _fn, re.I):
-                            _fp = os.path.join(_d, _fn)
-                            if _fp in _reg_cands:
-                                continue
-                            try:
-                                _hits.append((os.path.getmtime(_fp), _fp))
-                            except Exception:
-                                pass
-            for _m, _fp in sorted(_hits, reverse=True):
-                _reg_cands.append(_fp)
-        except Exception:
-            pass
-        for _p in _reg_cands:
-            _j = _read_json(_p)
-            if not isinstance(_j, dict):
-                continue
-            _reg_used.append(_p)
-            for _k, _val in _j.items():
-                if not isinstance(_val, list):
-                    continue
-                if isinstance(reg.get(_k), list):
-                    reg[_k] = reg[_k] + _val
-                else:
-                    reg[_k] = list(_val)
-    except Exception:
-        reg = {}
+    """只读当前任务的归属台账；历史任务不能追加本房间的零件。"""
+    reg = _read_json(artifact_registry_file()) or {}
     rec = reg.get(str(room))
     if not isinstance(rec, list):
         # 键名兜底：词干化（中文房间名在部分写入侧被 _safe_room_stem 处理过）
@@ -2992,6 +2937,7 @@ def check_room_defense(room, require_physics=None):
     room = str(room)
     rtypes = _room_types()
     rtype = rtypes.get(room, "")
+    requirements = delivery_requirements(room=room)
     if require_physics is None:
         # ── 【Bug⑥ 修复】按【归一化后的类型】判定是否强制物理校核 ──────────
         # 原实现只看 MODELING_ROOM_TYPES 白名单：drivetrain / sensor 这类
@@ -2999,7 +2945,10 @@ def check_room_defense(room, require_physics=None):
         #   （实测传动房 2 项 CRITICAL、传感器房从未校核，全部放行）。
         # 现在统一走 room_type_requires_physics()：先归一化别名，再只对
         #   纯出图/协调类（drafting/assembly/prime）豁免，其余含零件类型一律强制。
-        require_physics = room_type_requires_physics(rtype)
+        require_physics = (requirements["physics"]
+                           and (room_type_requires_physics(rtype)
+                                or requirements.get("room_physics")))
+    require_material = requirements["material"] or bool(require_physics)
 
     details = {}
     blockers = []
@@ -3022,7 +2971,10 @@ def check_room_defense(room, require_physics=None):
     _degrade_code = None
     try:
         _rt = _read_runtime()
-        if _rt.get("port"):
+        if not (require_material or require_physics):
+            # 几何交付不请求强制三防线总判定；显式材料仍在下方逐件验签。
+            pass
+        elif _rt.get("port"):
             _own = _port_owner_check(_rt.get("pid"), _rt.get("port"))
             if _own.get("ok"):
                 _hj = host_judge_room(room, require_physics=bool(require_physics))
@@ -3080,7 +3032,7 @@ def check_room_defense(room, require_physics=None):
                                 _lp = _modeling_parts(room)
                                 _lm = []
                                 for _a in _lp:
-                                    _lr = check_material_attestation(_a["path"])
+                                    _lr = check_material_attestation(_a["path"], required=require_material)
                                     _lr["part_name"] = (_a.get("name")
                                                         or os.path.basename(_a["path"]))
                                     _lm.append(_lr)
@@ -3120,6 +3072,10 @@ def check_room_defense(room, require_physics=None):
                                 "【防线①材料】本地材料校验异常，按未通过处理: %r"
                                 % (_e_lm,))
                             _res["ok"] = False
+                        _mat = (_res.get("details", {}).get("material") or {}).get("results") or []
+                        _waiting = next((r for r in _mat if r.get("requires_user_action")), {})
+                        _res.update(requires_user_action=bool(_waiting), retryable=False,
+                                    next_action=_waiting.get("next_action"))
                         return _res
                     # 转到本地验签：把宿主 missing 的成因与本地命中的路径都留痕
                     _degrade_code = "HOST_MISSING_LOCAL_CREDENTIAL"
@@ -3157,7 +3113,7 @@ def check_room_defense(room, require_physics=None):
     mat_results = []
     if parts:
         for a in parts:
-            r = check_material_attestation(a["path"])
+            r = check_material_attestation(a["path"], required=require_material)
             r["part_name"] = a.get("name") or os.path.basename(a["path"])
             mat_results.append(r)
             if not r["ok"]:
@@ -3210,8 +3166,8 @@ def check_room_defense(room, require_physics=None):
             blockers.append("【防线③领域】" + "；".join(dm["reasons"]))
             details["domain_hint"] = dm.get("hint")
     else:
-        details["physics"] = {"skipped": True, "reason":
-                              "房间类型 %r 非建模类，本房间不做物理/领域强制" % rtype}
+        details["physics"] = {"skipped": True, "evaluated": False, "reason":
+                              "本任务未要求物理校核，或房间类型 %r 不承担零件校核；未验证物理性能" % rtype}
         details["domain"] = {"skipped": True}
 
     if _host_note:
@@ -3223,9 +3179,14 @@ def check_room_defense(room, require_physics=None):
     _out_local = {
         "ok": not blockers, "room": room, "room_type": rtype or None,
         "require_physics": bool(require_physics),
+        "requirements": requirements,
         "blockers": blockers, "warnings": warnings, "details": details,
         "judged_by": "local",
         "degraded": bool(_degrade_code),
+        "requires_user_action": any(r.get("requires_user_action") for r in mat_results),
+        "retryable": False,
+        "next_action": next((r.get("next_action") for r in mat_results
+                             if r.get("requires_user_action")), None),
     }
     if _degrade_code:
         _out_local["degraded_reason_code"] = _degrade_code
@@ -3267,12 +3228,16 @@ def check_task_defense():
         if not _ph.get("backed_by_real_run"):
             continue
         phys_pass.append(r)
-    if not phys_pass:
+    if (delivery_requirements()["physics"] or any(r.get("require_physics") for r in rooms.values())) and not phys_pass:
         blockers.append(
             "【防线②物理】全任务没有任何一份【有真实运行背书】的 PASS 物理凭据 —— "
             "未做过（可追溯的）强度/寿命校核的任务不得交付")
     return {"ok": not blockers, "blockers": blockers, "warnings": warnings,
-            "rooms": rooms, "room_count": len(rooms)}
+            "rooms": rooms, "room_count": len(rooms),
+            "requires_user_action": any(r.get("requires_user_action") for r in rooms.values()),
+            "retryable": False,
+            "next_action": next((r.get("next_action") for r in rooms.values()
+                                 if r.get("requires_user_action")), None)}
 
 
 def log_bypass(where, reason="", by="unknown"):

@@ -77,11 +77,14 @@
                 目标：完成工图。原则：尺寸精确、不跳步、逐件验证、装配查干涉、不确定就问。输出简洁，进度 [进度: X%]。
 
                 ## 三大防线（代码级硬门禁）
+                交付要求由 defense_gate.delivery_requirements 按当前任务原文判定；几何/出图任务默认可不指定材料，不要求 FEA。
+                无材须写“材料未指定，质量/强度未验证”；不得为过门禁自动选 Q235、补密度或伪造凭据。
+                指定材料无法写入或读回验证时立即停下，报告失败原因并等待用户处理；requires_user_action=true/retryable=false 禁止自动重跑、重建、换名换材料。
                 凭据须宿主签名（HMAC 仅内存）。save/physics-optimize/physics-validate-domain 自动签发。
                 禁改 reports/*.physics.json、*.domain.json、<零件>.SLDPRT.material.json：必验签失败并进 .defense/quarantine。
-                ①材料：.sldprt 须带 <零件>.material.json，禁缺失/密度1000(水)/跨标准替代。
-                ②物理：每房间须出 reports/<房间>.physics.json，FAIL 或寿命不足拒 room-end。
-                ③领域：每房间须出 reports/<房间>.domain.json，有 CRITICAL 拒 room-end。
+                ①材料：用户指定材料/重量/密度或要求物理校核时，须真实赋材并读回；禁密度1000(水)/跨标准替代。
+                ②物理：明确要求强度/疲劳/载荷等物理性能的建模房间须出 reports/<房间>.physics.json，FAIL 或寿命不足拒 room-end。
+                ③领域：承担物理校核的房间须出 reports/<房间>.domain.json，有 CRITICAL 拒 room-end。
                 自查 python "<根>\tools\defense_gate.py" check-room <房间>|check-task。宿主不可用→无签名→fail-closed。
                 合法绕行仅 --force / DSH_DEFENSE_BYPASS=1（留痕）。别等 room-end 才首次校核。
 
@@ -124,8 +127,9 @@
                 形位GB/T1182、标题栏（材料比例图号设计者）。命令 python sw_bridge.py reading。
 
                 ## 物理在环
+                仅在用户要求物理性能时执行。赋材失败时沿用上面的等待用户规则。
                 载荷只认 <根>\tools\load_cases\gate_load_case.json（额定=magnitude_n），严禁另写数值。
-                材料先赋：new_part() 默认 Q235，其他显式 new_part(material=)。缺材或密度1000→直接 FAIL，先解决材料。
+                new_part() 默认不指定材料；需要材料时显式 new_part(material=)。物理校核缺材或密度1000→直接 FAIL，先解决材料。
                 国标牌号直接用（全程保留国标身份）：Q235 Q355 45 40Cr 20CrMnTi 65Mn GCr15 Cr12MoV HT200 QT500-7
                 06Cr19Ni10 022Cr17Ni12Mo2 6061-T6 7075-T6 2A12 ZL104 ZCuSn10P1 H62。
                 被近似成欧美标→判跨标准替代拦截；库中无则 set_custom_material() 登记。

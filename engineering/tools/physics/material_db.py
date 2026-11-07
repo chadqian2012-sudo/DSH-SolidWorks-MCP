@@ -9,6 +9,90 @@ from __future__ import annotations
 
 from typing import Any
 
+# CAD命名与属性表由swapi迁入，供COM建模与纯Python门禁共用。
+COMMON_MATERIALS = {
+    # ── 国标牌号（【原有数据，恢复】只登记密度与别名）────────────────────
+    # 说明：这些条目是项目原有内容，仅用于"认出用户说的牌号 + 提供密度"。
+    #   它们的【力学属性（E/屈服/抗拉/泊松比）不在此写死】——
+    #   GB/T 是国家统一标准，数值由外部 gb_materials.json 提供（见文件末尾
+    #   的 _load_gb_into_common_materials）。导入后这些牌号会自动补齐属性；
+    #   未导入时只能做密度/名称匹配，强度类判定会如实报"属性缺失"。
+    "Q235": {"density": 7850, "aliases": ["Q235", "AISI 1020", "Plain Carbon Steel", "碳钢"]},
+    "45#": {"density": 7850, "aliases": ["45", "AISI 1045", "1045"]},
+    "40Cr": {"density": 7850, "aliases": ["40Cr", "AISI 5140", "5140", "Chromium Steel"]},
+    "304": {"density": 8000, "aliases": ["304", "AISI 304", "Stainless Steel", "不锈钢"]},
+    "316": {"density": 8000, "aliases": ["316", "AISI 316"]},
+    "6061-T6": {"density": 2700, "aliases": ["6061", "6061-T6", "Aluminum Alloy 6061", "铝合金"]},
+    "7075": {"density": 2810, "aliases": ["7075", "7075-T6"]},
+    "Cr12MoV": {"density": 7700, "aliases": ["Cr12MoV", "D2", "Tool Steel"]},
+    "HT200": {"density": 7200, "aliases": ["HT200", "Gray Cast Iron", "灰铸铁"]},
+    # ── 3D 打印材料（【Bug-13/29】新增，原有数据）──────────────────────
+    # 注意：不把 PETG-CF / PETG-GF 列为别名 —— 碳纤/玻纤增强的弹性模量
+    #   (~6.5GPa) 与普通 PETG (2.0GPa) 差 3 倍，别名会让增强料被解析成普通料。
+    #   增强料应由 set_custom_material 显式登记（custom_materials.json）。
+    "PETG": {"density": 1270, "e_mpa": 2000, "yield_mpa": 40, "uts_mpa": 50,
+             "poissons_ratio": 0.37,
+             "aliases": ["PETG", "PET-G", "Copolyester"]},
+    "PLA": {"density": 1240, "e_mpa": 3500, "yield_mpa": 55, "uts_mpa": 60,
+             "poissons_ratio": 0.36,
+            "aliases": ["PLA", "PLA+", "Polylactic Acid", "聚乳酸"]},
+    "ABS": {"density": 1050, "e_mpa": 2400, "yield_mpa": 45, "uts_mpa": 50,
+             "poissons_ratio": 0.4,
+            "aliases": ["ABS", "Acrylonitrile Butadiene Styrene"]},
+    "ASA": {"density": 1070, "e_mpa": 2300, "yield_mpa": 45, "uts_mpa": 50,
+             "poissons_ratio": 0.4,
+            "aliases": ["ASA"]},
+    "Nylon": {"density": 1140, "e_mpa": 2800, "yield_mpa": 80, "uts_mpa": 85,
+             "poissons_ratio": 0.39,
+              "aliases": ["Nylon", "PA", "PA6", "PA66", "Nylon 6/6", "尼龙"]},
+    "PA12": {"density": 1010, "e_mpa": 1700, "yield_mpa": 48, "uts_mpa": 50,
+             "poissons_ratio": 0.39,
+             "aliases": ["PA12", "PA-12", "Nylon 12", "尼龙12"]},
+    "TPU": {"density": 1210, "e_mpa": 50, "yield_mpa": 30, "uts_mpa": 40,
+             "poissons_ratio": 0.48,
+            "aliases": ["TPU", "TPE", "Flexible", "热塑性聚氨酯"]},
+    "PC": {"density": 1200, "e_mpa": 2400, "yield_mpa": 65, "uts_mpa": 70,
+             "poissons_ratio": 0.37,
+           "aliases": ["PC", "Polycarbonate", "聚碳酸酯"]},
+    "POM": {"density": 1410, "e_mpa": 3100, "yield_mpa": 70, "uts_mpa": 75,
+             "poissons_ratio": 0.35,
+            "aliases": ["POM", "Delrin", "POM-C", "聚甲醛"]},
+    "PEEK": {"density": 1320, "e_mpa": 3700, "yield_mpa": 100, "uts_mpa": 110,
+             "poissons_ratio": 0.38,
+             "aliases": ["PEEK"]},
+    # ── 【通用结构钢兜底】非国标牌号，供 GB 数据未导入时使用 ──────────────
+    # 说明：这里刻意【不使用 GB/T 牌号名】（如 Q235/40Cr），避免在数据未导入
+    #   时"借用国标名义"给出数值。用的是国际通行的通用钢种命名，
+    #   属性为工程手册通用值，可在没有国标数据时维持系统可用。
+    #   一旦用户导入 gb_materials.json，国标牌号会被合并进来并【优先命中】。
+    "PlainCarbonSteel": {
+        "density": 7850, "e_mpa": 206000, "yield_mpa": 250, "uts_mpa": 400,
+        "poissons_ratio": 0.30,
+        "standard": "通用碳素结构钢（非 GB 牌号）",
+        "aliases": ["PlainCarbonSteel", "Carbon Steel", "普通碳钢", "碳素钢",
+                    "AISI 1020", "S235JR"],
+    },
+    "AlloySteel4140": {
+        "density": 7850, "e_mpa": 205000, "yield_mpa": 655, "uts_mpa": 760,
+        "poissons_ratio": 0.29,
+        "standard": "通用合金结构钢（非 GB 牌号）",
+        "aliases": ["AlloySteel4140", "AISI 4140", "42CrMo", "合金钢"],
+    },
+    "StainlessSteel304": {
+        "density": 7930, "e_mpa": 193000, "yield_mpa": 205, "uts_mpa": 520,
+        "poissons_ratio": 0.30,
+        "standard": "通用奥氏体不锈钢（非 GB 牌号）",
+        "aliases": ["StainlessSteel304", "AISI 304", "S30408", "Type 304"],
+    },
+    "Aluminum6061": {
+        "density": 2700, "e_mpa": 68900, "yield_mpa": 276, "uts_mpa": 310,
+        "poissons_ratio": 0.33,
+        "standard": "通用铝合金（非 GB 牌号）",
+        "aliases": ["Aluminum6061", "Aluminum 6061-T6", "Al 6061"],
+    },
+}
+
+
 # ── 铝合金 ──────────────────────────────────────────────
 AL_ALLOYS = {
     "AL_1060": {"name": "Aluminum 1060 (annealed)",
@@ -320,6 +404,130 @@ def _norm_key(s):
     for _ch2 in (" ", "\t", "\u3000", "-", "_", "（", "）", "(", ")", "·", "."):
         _t = _t.replace(_ch2, "")
     return _t
+
+
+def material_standard_of(name):
+    """【Bug-C 修复】判定材料名所属的【标准体系】。
+
+    Returns: "GB" / "ASTM" / "EN" / "JIS" / "DIN" / "ISO" / None（无法判定）
+
+    判据（按牌号命名特征）：
+      · GB    —— Q235 / Q355 / 45# / 40Cr / 20CrMnTi / GCr15 / Cr12MoV /
+                 HT200 / QT500-7 / 2A12 / LY12 / ZCuSn10 / H62 / ZL104 /
+                 06Cr19Ni10 / 022Cr17Ni12Mo2（GB/T 新牌号）
+      · ASTM  —— AISI/ASTM 数字牌号（1020/1045/4140/4340）、A36、Grade 5
+      · EN    —— S235JR / S355 / 1.4301 等
+      · JIS   —— SUS304 / S45C 等
+      · ISO   —— ISO 前缀
+    """
+    s = str(name or "").strip()
+    if not s:
+        return None
+    sl = s.lower()
+    # ── GB 特征（优先级最高：这些牌号形态独一无二）──────────────────
+    import re as _re
+    if _re.search(r"(^|[^a-z])q\d{3}", sl):                    # Q235 / Q355
+        return "GB"
+    if _re.search(r"\b(ht|qt|yt|zt)\d{3}", sl):                 # HT200 / QT500-7
+        return "GB"
+    if _re.search(r"\b(gcr|zcusn|znal|zal|zcu)", sl):           # GCr15 / ZCuSn10
+        return "GB"
+    if _re.search(r"\b(cr12mov|20crmnti|40cr|65mn|38crmoala)\b", sl):
+        return "GB"
+    if _re.search(r"\b(2a12|ly12|5a02|7a04|2a11)\b", sl):       # 硬铝旧/新牌号
+        return "GB"
+    if _re.search(r"^\d{2,3}#?$", sl):                          # 45 / 45#
+        return "GB"
+    if _re.search(r"^(06cr|022cr|12cr|10cr|0cr|1cr|2cr|3cr)", sl):
+        return "GB"                                             # GB/T 20878 不锈钢
+    if _re.search(r"\bh62\b|\bh59\b|\bh68\b|\bzl\d{3}\b", sl):
+        return "GB"
+    # ── 欧美日标准 ──────────────────────────────────────────────────
+    if _re.search(r"\baisi\b|\bastm\b|\bsae\b|\ba36\b", sl):
+        return "ASTM"
+    if _re.search(r"^s\d{3}(jr|j0|j2|mc|ml)?$|\b1\.\d{4}\b", sl):
+        return "EN"
+    if _re.search(r"^sus\d|\bs\d{2}c\b|\bsk\d\b", sl):
+        return "JIS"
+    if _re.search(r"^iso\b|\biso\d", sl):
+        return "ISO"
+    if _re.search(r"^din\b|\bck\d{2}\b|\b42crmo4\b", sl):
+        return "DIN"
+    # 纯数字牌号（1020/1045/4140/4340/304/316）→ 按 AISI/通用不锈钢处理
+    if _re.search(r"^(10|11|12|41|43|86)\d{2}$", sl):
+        return "ASTM"
+    if _re.search(r"^(304|316|316l|321|410|420|430)$", sl):
+        return "ASTM"
+    return None
+
+
+_MATERIAL_NAME_SEPS = ("|", "\\", ":", "：")
+
+
+def material_name_variants(name):
+    """把一个材质名拆成【全部可比较的候选写法】（顺序无关、去重、已归一化）。
+
+    例：
+      "SolidWorks Materials|普通碳钢"      → {"solidworks materials|普通碳钢", "普通碳钢"}
+      "SolidWorks Materials|钢|Q235"       → {..., "solidworks materials|钢|q235", "钢|q235", "q235"}
+    【不做同义词替换】，只做"拆段 + 折叠空白 + 忽略大小写"。
+    """
+    s = str(name or "").strip()
+    if not s:
+        return []
+    out = []
+    def _add(x):
+        x = " ".join(str(x or "").split())
+        if x:
+            k = x.casefold()
+            if k not in out:
+                out.append(k)
+    _add(s)
+    # 逐级剥掉"最左边一段"，把所有后缀都作为候选（顺序无关）
+    cur = s
+    for _sep in _MATERIAL_NAME_SEPS:
+        if _sep in cur:
+            _parts = [p.strip() for p in cur.split(_sep)]
+            _parts = [p for p in _parts if p]
+            # 所有后缀（"A|B|C" → "B|C", "C"）+ 所有单段（"A","B","C"）
+            for _i in range(1, len(_parts)):
+                _add(_sep.join(_parts[_i:]))
+            for _p in _parts:
+                _add(_p)
+    # 常见库名前缀（"SolidWorks Materials - xxx" 之类）
+    for sep in (" - ", " – ", " — "):
+        if sep in s:
+            _add(s.split(sep)[-1])
+    return out
+
+
+def material_names_match(actual, requested):
+    """只认归一化同名或已登记的同标准命名别名；不以相近密度代替身份。"""
+    av, rv = material_name_variants(actual), material_name_variants(requested)
+    if not av or not rv:
+        return False
+    if av[0] == rv[0] or ((len(av) == 1 or len(rv) == 1) and set(av) & set(rv)):
+        return True
+    names = {}
+    for canonical, info in COMMON_MATERIALS.items():
+        for alias in [canonical] + list(info.get("aliases") or []):
+            names.setdefault(_norm_key(alias), _norm_key(canonical))
+    for canonical in COMMON_MATERIALS:
+        names[_norm_key(canonical)] = _norm_key(canonical)
+    for material_id, info in GB_MATERIALS.items():
+        aliases = [material_id, info.get("name"), info.get("name_cn"), *(info.get("aliases") or [])]
+        identity = next((names[_norm_key(alias)] for alias in aliases
+                         if _norm_key(alias) in names), _norm_key(material_id))
+        for alias in aliases:
+            if alias:
+                names.setdefault(_norm_key(alias), identity)
+    identities = [{(material_standard_of(name), names[_norm_key(name)])
+                   for name in variants if _norm_key(name) in names}
+                  for variants in (av, rv)]
+    if len(av) > 1 and len(rv) > 1:
+        return bool(identities[0]) and identities[0] == identities[1]
+    return bool(identities[0] & identities[1])
+
 
 
 _GB_ALIAS_INDEX = None

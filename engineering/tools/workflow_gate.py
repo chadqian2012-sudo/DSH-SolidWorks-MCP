@@ -1879,11 +1879,14 @@ def cmd_confirm_assembly(parts_payload):
         try:
             import defense_gate as _dg
             _bad = []
+            _waiting_material = None
             _rooms = _wave1_room_names()
             for _r in _rooms:
                 _d = _dg.check_room_defense(_r)
                 if not _d["ok"]:
                     _bad.append((_r, _d["blockers"]))
+                    if _d.get("requires_user_action"):
+                        _waiting_material = _d.get("next_action")
             if _bad:
                 _nl = chr(10)
                 _lines = ["=== 【三大防线】拦截：第一波房间未通过校验，禁止开启总装 ===", ""]
@@ -1891,16 +1894,19 @@ def cmd_confirm_assembly(parts_payload):
                     _lines.append("房间 [%s]:" % _r)
                     for _b in _bs:
                         _lines.append("   ✗ " + _b)
-                _lines += [
+                _lines += (["", _waiting_material] if _waiting_material else [
                     "",
                     "处理：让对应小屋补齐材料凭据 / 跑 physics-optimize / 跑",
                     "physics-validate-domain 后，重新 room-end 该房间，再调 confirm-assembly。",
                     "（确需放行：设 DSH_DEFENSE_BYPASS=1，会留痕。）",
-                ]
+                ])
                 return {
                     "ok": False,
                     "gate": "DEFENSE_REQUIRED",
                     "phase": "confirm-assembly",
+                    "requires_user_action": bool(_waiting_material),
+                    "retryable": False,
+                    "next_action": _waiting_material,
                     "blocked_rooms": [x[0] for x in _bad],
                     "error": "【三大防线】第一波房间未通过强制校验，禁止开启总装。",
                     "message": _nl.join(_lines),
@@ -3591,21 +3597,27 @@ def cmd_provide_context(context_text):
     # 第0题答案 + 第二段答案拼在一起，保证力学估算能看到全部关键词
     merged = ((state.get("depth_answer") or "") + " " + (context_text or "")).strip()
     state["context"] = merged
-    state["mechanics_result"] = estimate_mechanics(state["task"], merged)
+    from defense_gate import delivery_requirements
+    requirements = delivery_requirements(state)
+    state["mechanics_result"] = (estimate_mechanics(state["task"], merged)
+                                 if requirements["physics"] else {
+                                     "applicable": False,
+                                     "reason": "未要求物理校核，不生成材料与载荷假设"})
     state["step"] = "mechanics_done"
     # 【FL-02】记录"力学估算已完成"的时刻（select 时序校验的关键凭据）
     state["mechanics_done_ts"] = time.time()
     # ── 【BUG-07 修复】把力学估算落盘为 physics 可直接读取的载荷工况 ──────
     # 门禁与 physics 从此共用同一份数值（额定载荷 nominal_load_n 写进
     # magnitude_n），彻底消除"门禁 1000N / physics 100N"的口径分裂。
-    _lc = write_load_case_file(state, state["mechanics_result"])
+    _lc = (write_load_case_file(state, state["mechanics_result"])
+           if requirements["physics"] else {"ok": False, "skipped": True})
     state["load_case_file"] = _lc.get("path") if _lc.get("ok") else None
     if _budget_warn:
         state["question_budget_warning"] = _budget_warn
     save_state(state)
     m = state["mechanics_result"]
     depth = state.get("param_depth")
-    msg = nl.join([
+    msg = nl.join(([
         "力学估算完成（参数需求: %s）:" % ("强需求" if depth == "full" else "不强/精简"),
         "  额定载荷: %s N   （来源: %s）"
         % (m.get("nominal_load_n"), m.get("load_source")),
@@ -3615,6 +3627,10 @@ def cmd_provide_context(context_text):
         "  安全系数: %.1f   材料: %s" % (m["safety_factor"], m["material_recommend"]),
         "  设计寿命: %.0f 年   动作频次: %.0f 次/年"
         % (m.get("design_life_years") or 0, m.get("cycles_per_year") or 0),
+    ] if requirements["physics"] else [
+        "设计背景已收齐；本任务未要求物理校核，不推定载荷或默认材料。",
+        "只指定材料时仍须真实赋材并读回；未指定材料可继续几何交付。",
+    ]) + [
         "",
         "请选择搭建方式 A/B/C 和并行策略 D/E：",
         "  A = 完全自主搭建    B = 部分自主（关键节点询问）    C = 步步确认（逐零件确认）",
@@ -3634,7 +3650,7 @@ def cmd_provide_context(context_text):
             % (m.get("design_life_years") or 0, m.get("cycles_per_year") or 0),
             "  physics 疲劳模块会据此做 S-N + Miner 累积损伤校核。",
         ])
-    else:
+    elif not _lc.get("skipped"):
         msg += nl + nl + "⚠️ 载荷工况落盘失败: %s（请手工确保 physics 使用额定载荷 %s N）" % (
             _lc.get("error"), m.get("nominal_load_n"))
     # ── 【BUG-7】把"按需提问未达标"显式写进回传正文，不能只藏在 state 里 ──
@@ -3680,6 +3696,7 @@ def cmd_provide_context(context_text):
     save_state(state)
     return {"ok": True, "step": "mechanics_done", "task": state["task"],
             "param_depth": depth, "mechanics": m,
+            "delivery_requirements": requirements,
             # ── 【流程重排】A/B/C + D/E 已在第 1 步问过，此处只回传已收集值 ──
             "choice_already_asked": True,
             "collected_choice": _collected_choice,
@@ -3796,7 +3813,7 @@ def _archive_finished(state, done_count, total, message):
                 if len(_dt["blockers"]) > 24:
                     _ls.append("  …（其余 %d 项见 defense_gate.py check-task）"
                                % (len(_dt["blockers"]) - 24))
-                _ls += [
+                _ls += (["", _dt.get("next_action")] if _dt.get("requires_user_action") else [
                     "",
                     "任务【不得】宣告完成。请先补齐：",
                     "  ① 材料：零件重新赋材并 save()（生成 .material.json 凭据）；",
@@ -3805,11 +3822,14 @@ def _archive_finished(state, done_count, total, message):
                     "然后用 mode_gate.py room-end 重新收尾各房间，再调 select。",
                     "",
                     "（确需放行：设 DSH_DEFENSE_BYPASS=1，会留痕到 reports/defense_bypass.json）",
-                ]
+                ])
                 return {
                     "ok": False,
                     "gate": "DEFENSE_REQUIRED",
                     "phase": "finish",
+                    "requires_user_action": bool(_dt.get("requires_user_action")),
+                    "retryable": False,
+                    "next_action": _dt.get("next_action"),
                     "defense": {"blockers": _dt["blockers"][:24],
                                 "warnings": _dt["warnings"][:12],
                                 "room_count": _dt["room_count"]},
@@ -4843,7 +4863,9 @@ def cmd_select(choice, parallel=None, unknown=None, brief=False):
     #   实测：门禁明确回了 load_is_estimate=true / 500N（而实际约 9N），
     #   模型嘴上说"复核"，实际照旧按 500N 往下走，零件被强行加厚。
     #   代码级做法：没有 confirm-load 记录就不放行。
-    if state.get("load_is_estimate") and not state.get("load_confirmed_at"):
+    from defense_gate import delivery_requirements
+    if (delivery_requirements(state)["physics"]
+            and state.get("load_is_estimate") and not state.get("load_confirmed_at")):
         # 算出"建议命令"里的数值：优先用载荷工况文件里的真实额定值，
         # 取不到就退回门禁记忆里的 nominal_load_n（两者应当一致）。
         _suggest_load = None

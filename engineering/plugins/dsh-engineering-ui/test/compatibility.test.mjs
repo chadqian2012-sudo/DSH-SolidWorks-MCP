@@ -379,6 +379,144 @@ test('收尾守卫：非终态时 steer，达到 finished 后放行，且 source
   }
 });
 
+test('材料失败等用户时放行，成功或真人纠正后恢复守卫；普通失败照常', () => {
+  const temp = mkdtempSync(path.join(tmpdir(), 'dsh-eng-material-tools-'));
+  const oldState = process.env.DSH_STATE_DIR;
+  process.env.DSH_STATE_DIR = temp;
+  const workflow = { task_id: 'current', step: 'design' };
+  writeFileSync(path.join(temp, 'workflow_state.json'), JSON.stringify(workflow));
+  writeFileSync(path.join(temp, 'mode_state.json'), JSON.stringify({
+    rooms: { part: { task_id: 'current', active: true } },
+  }));
+  const h = harness();
+  try {
+    const now = Date.now();
+    let clock = now;
+    const events = [{ type: 'user/message', time: now, data: { source: { kind: 'user' }, content: [] } }];
+    const steered = [];
+    const agent = { id: 'material-tools',
+      session: { header: { agentPreset: 'engineering' }, snapshotEvents: () => events },
+      steer: (message) => steered.push(message) };
+    const stop = () => h.hooks.all('agent/turn-stopping').forEach(fn => fn({ agent }));
+    const output = (result, name = 'pwsh', command = `& "${path.join(temp, 'python.exe')}" "${path.join(temp, 'sw_bridge.py')}" run "part.py"`) => {
+      const callId = 'call-' + events.length;
+      if (name) events.push({ type: 'tool/call', time: ++clock,
+        data: { callId, name, arguments: JSON.stringify({ command }) } });
+      events.push({ type: 'tool/result', time: ++clock,
+        data: { message: { toolCallId: callId, content: [{ type: 'text', text: '[swapi][WARN] failed\n'
+          + JSON.stringify(result, null, 2) + '\n[exit code: 1]' }] } } });
+    };
+    output({ ok: false, retryable: false, error: 'ordinary command failure' });
+    stop();
+    assert.equal(steered.length, 1, '普通失败不会新增等待用户的放行条件');
+    const needsUser = { ok: false, requires_user_action: true, retryable: false };
+    output(needsUser, 'read_file');
+    stop();
+    assert.equal(steered.length, 2, '读取 JSON 文件回显等待字段不会放行');
+    output(needsUser, 'pwsh', 'Get-Content material-status.json');
+    stop();
+    assert.equal(steered.length, 3, '普通 pwsh 文件读取也不会放行');
+    output(needsUser, 'pwsh', 'Write-Output material-status');
+    stop();
+    assert.equal(steered.length, 4, '无关命令回显 JSON 不会放行');
+    output(needsUser, null);
+    stop();
+    assert.equal(steered.length, 5, '没有匹配 callId 的工具结果不会放行');
+    output({ ok: false, requires_user_action: true, retryable: true });
+    stop();
+    assert.equal(steered.length, 6, '可以自动重试的结果不放行');
+    output({ ok: false, requires_user_action: true, retryable: false });
+    stop();
+    assert.equal(steered.length, 6, '明确需要用户且不可重试时不再拉回');
+    events.push({ type: 'user/message', time: now + 100,
+      data: { source: { kind: 'plugin:dsh-engineering-ui' }, content: [] } });
+    stop();
+    assert.equal(steered.length, 6, '插件补充消息不会冒充用户纠正');
+    output({ ok: true, requires_user_action: false, retryable: false });
+    stop();
+    assert.equal(steered.length, 7, '新的成功结果取代同一会话旧失败');
+    output({ ok: false, requires_user_action: true, retryable: false });
+    clock = now + 200;
+    events.push({ type: 'user/message', time: clock,
+      data: { source: { kind: 'user' }, content: [{ type: 'text', text: '改用用户确认的准确材料' }] } });
+    stop();
+    assert.equal(steered.length, 8, '用户纠正后旧工具结果不再阻止正常继续');
+    output({ ok: false, task_id: 'previous', requires_user_action: true, retryable: false });
+    stop();
+    assert.equal(steered.length, 9, '其他任务的结果不能放行');
+    output({ ok: false, requires_user_action: true, retryable: false });
+    stop();
+    assert.equal(steered.length, 9, '纠正后新的真实失败仍可以停下等用户');
+    output({ ok: true, material_defense: [{ ok: true, applicable: true, level: 'PASS' }] });
+    stop();
+    assert.equal(steered.length, 10, '新的桥接材料检查成功不继承旧工具失败');
+    assert.deepEqual(JSON.parse(readFileSync(path.join(temp, 'workflow_state.json'), 'utf8')), workflow,
+      '等待人工不写 finished 或修改任务状态');
+  } finally {
+    h.dispose();
+    if (oldState === undefined) delete process.env.DSH_STATE_DIR; else process.env.DSH_STATE_DIR = oldState;
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('材料房间报告只认当前任务、所属房间和最新记录，用户纠正后恢复守卫', () => {
+  const temp = mkdtempSync(path.join(tmpdir(), 'dsh-eng-material-report-'));
+  const oldState = process.env.DSH_STATE_DIR;
+  process.env.DSH_STATE_DIR = temp;
+  const taskId = 'current';
+  const reportDir = path.join(temp, 'reports', taskId);
+  mkdirSync(reportDir, { recursive: true });
+  writeFileSync(path.join(temp, 'workflow_state.json'), JSON.stringify({ task_id: taskId, step: 'design' }));
+  const mode = { rooms: { '材料 房': { active: true, task_id: taskId },
+    old: { active: true, task_id: 'previous' } }, subagents: { '材料 房': { id: 'child-a' } } };
+  writeFileSync(path.join(temp, 'mode_state.json'), JSON.stringify(mode));
+  const h = harness();
+  try {
+    const now = Date.now();
+    const events = [{ type: 'user/message', time: now, data: { source: { kind: 'user' }, content: [] } }];
+    const steered = [];
+    const agent = { id: 'material-reports',
+      session: { header: { agentPreset: 'engineering' }, snapshotEvents: () => events },
+      steer: (message) => steered.push(message) };
+    const stop = () => h.hooks.all('agent/turn-stopping').forEach(fn => fn({ agent }));
+    const failed = { room: '材料 房', task_id: taskId, stage: 'failed', ts: (now + 1000) / 1000,
+      requires_user_action: true, retryable: false };
+    const report = (latest) => writeFileSync(path.join(reportDir, '材料 房.report.json'),
+      JSON.stringify({ room: '材料 房', task_id: taskId, latest, history: [failed] }));
+    writeFileSync(path.join(reportDir, 'old.report.json'), JSON.stringify({ room: 'old',
+      latest: { ...failed, room: 'old' } }));
+    stop();
+    assert.equal(steered.length, 1, '其他任务房间的报告不放行');
+    report(failed);
+    stop();
+    assert.equal(steered.length, 1, '当前任务最新报告明确等待用户时不拉回');
+    report({ ...failed, task_id: 'previous' });
+    stop();
+    assert.equal(steered.length, 2, '同名文件内任务身份也必须匹配');
+    report({ room: '材料 房', task_id: taskId, stage: 'validating', ts: (now + 2000) / 1000 });
+    stop();
+    assert.equal(steered.length, 3, '新报告恢复工作，history 的旧失败不再放行');
+    report(failed);
+    agent.id = 'child-b';
+    agent.delegationDepth = 1;
+    stop();
+    assert.equal(steered.length, 4, '子代理不能借其他房间的材料失败放行');
+    agent.id = 'child-a';
+    stop();
+    assert.equal(steered.length, 4, '所属房间的子代理可以等待用户');
+    events.push({ type: 'user/message', time: now + 3000,
+      data: { source: { kind: 'user' }, content: [] } });
+    stop();
+    assert.equal(steered.length, 5, '真人纠正后旧报告不再放行');
+    assert.deepEqual(JSON.parse(readFileSync(path.join(temp, 'mode_state.json'), 'utf8')), mode,
+      '等待人工不会结束房间或修改活动标记');
+  } finally {
+    h.dispose();
+    if (oldState === undefined) delete process.env.DSH_STATE_DIR; else process.env.DSH_STATE_DIR = oldState;
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test('日志端点走 0.2.0 的 open/read/close，过滤继承事件与高频 chunk', async () => {
   const h = harness({ child: {
     header: { parentSession: 'root', createdAt: 10 },

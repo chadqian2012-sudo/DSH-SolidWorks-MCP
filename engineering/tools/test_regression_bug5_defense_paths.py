@@ -193,7 +193,8 @@ dg._port_owner_check = lambda pid, port=None: {"ok": True, "reason": "test"}
 dg.host_judge_room = lambda room, require_physics=True: dict(host_missing)
 dg.credential_is_signed_and_valid = lambda cred: {"ok": True}
 try:
-    r = dg.check_room_defense(ROOM)
+    # 本用例检查物理凭据丢失后的宿主/本地判定，明确要求物理校核。
+    r = dg.check_room_defense(ROOM, require_physics=True)
     check("转为本地判定", r.get("judged_by") == "local", r.get("judged_by"))
     check("降级原因码 = HOST_MISSING_LOCAL_CREDENTIAL",
           r.get("degraded_reason_code") == "HOST_MISSING_LOCAL_CREDENTIAL",
@@ -219,7 +220,7 @@ dg._read_runtime = lambda: {"port": 1, "pid": 1}
 dg._port_owner_check = lambda pid, port=None: {"ok": True, "reason": "test"}
 dg.host_judge_room = lambda room, require_physics=True: dict(host_missing)
 try:
-    r2 = dg.check_room_defense(ROOM)
+    r2 = dg.check_room_defense(ROOM, require_physics=True)
     check("不转换（本地也没凭据）", r2.get("judged_by") == "host", r2.get("judged_by"))
     check("仍然拒绝（ok=False，fail-closed）", r2.get("ok") is False)
     check("仍带回宿主 reports_dir", bool(r2.get("host_reports_dir")),

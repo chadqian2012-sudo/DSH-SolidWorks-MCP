@@ -7,7 +7,7 @@ from swapi import MM, SWModel, _com_get, _feature_type_name, _is_sketch_feature
 
 
 def saved_duct_geometry_matches(sw, path, geometry_sha256):
-    """核对已保存的单配置风管曲面及文件摘要；查询失败交由材料检查处理。"""
+    """核对已保存的单配置风管曲面及文件摘要。"""
     from gate_integrity import _sha256
     doc = sw.GetOpenDocumentByName(path)
     model = win32com.client.CastTo(doc, "IModelDoc2")

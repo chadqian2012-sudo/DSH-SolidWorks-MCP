@@ -207,7 +207,7 @@ python "<工程模式根目录>\tools\mode_gate.py" room-board --json
 
 ### ② 生成-仿真-优化的物理在环迭代架构（黄线）— 作用于小屋1/2/3
 
-**触发时机**：每个小屋完成单个零件建模后，自动进入此循环
+**触发时机**：当前任务明确要求强度、疲劳、载荷等物理性能时，建模完成后进入此循环。几何/出图任务不自动扩展为物理校核。
 **作用范围**：小屋1/2/3 各自内部的零件级 FEA 验证
 
 流程：
@@ -499,9 +499,8 @@ python "<工程模式根目录>\tools\mode_gate.py" residue-check --clean  # 体
 1. **设计**：根据输入进行三维建模（调用 DSH_SW）
 2. **验证**：
    - 几何门禁检查（geometry_gate.py）
-   - FEA 物理验证（physics_bridge.py）
-   - 领域规则检查（refine_rules.py）
-   - 三大功能运行区按上述规则自动触发
+   - 要求物理性能时做 FEA 及领域规则检查（physics_bridge.py / refine_rules.py）
+   - 未指定材料可交付几何，并明确材料、质量与强度未验证；显式材料要求仍须真实赋材读回
 3. **输出**：
    - 零件文件（.sldprt）
    - 压缩结果摘要（JSON 格式）
@@ -645,8 +644,8 @@ SW 使用窗口（多屋并行时）：
 4. [进度: 25%] wave1：各房间 room-start → **一条回复一次性 fork 全部**
    → 每个 fork 后立刻 `subagent-assign <房间> <id>`
    → 总理子代理同批启动，循环读 `room-board --json`（`waiting_sw` 不算死）
-5. [进度: 60%] wave1 各房间建模 → FEA → 领域规则 → 压缩摘要 → room-end
+5. [进度: 60%] wave1 各房间建模 → 按交付要求验证（物理任务须 FEA/领域规则）→ 压缩摘要 → room-end
    （SW 排队时 `waiting_sw`，正常等待，**禁止判死/reset**）
-6. [进度: 75%] wave2：总装与验证（等 wave1 全部 room-end）→ 干涉检查 + 整体 FEA
+6. [进度: 75%] wave2：总装与验证（等 wave1 全部 room-end）→ 干涉检查；明确要求时做整体 FEA
 7. [进度: 92%] wave3：工程图输出 → GB/T 检查 → CADX 验证
 8. [进度: 100%] 汇总交付：`room-end 总理子代理` → 文件清单 + 验证报告
