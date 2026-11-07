@@ -6,7 +6,11 @@
 
 图纸工具需要 `Pillow ezdxf matplotlib`。PDF 需要 Poppler，DWG 需要 LibreDWG 的 `dwg2dxf`。建模还需 Windows 桌面版 SOLIDWORKS、零件模板及同一 Python 环境里的 `pywin32`。模型选 `deepseek-flash`。[DeepSeek 视觉输入说明](https://api-docs.deepseek.com/guides/vision/)
 
-**验证范围**　本机在 Harness Desktop 0.2.1-rc.5 上加载了工程插件，并把测试图原样传到了模拟模型服务。LibreDWG 官方样图及九张随包机械图都生成了可见预览。这九张机械图的转换结果没有原生尺寸标注实体。带尺寸的独立 DXF 样本另行核对了显示值和覆盖文字。本版尚未用线上 Flash 识读尺寸，也没有在 SOLIDWORKS 中建成并重开风管。
+**DSH 0.2.2-rc.1 已验证**：[官方 RC1](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2-rc.1) 的桌面版可以新装工程插件，也能从已有配置升级。Web 端可以选择工程模式并新建会话。模型接替后仍可手动选回 Flash。桌面安装方法见[下方](#windows-桌面安装)。
+
+**读图实测边界**：RC1 能接收 50 MiB 的单图，但 Flash 请求可能再次缩图。实测一张宽 9000 像素的图最终只发出 4096 像素宽；小图的发送字节与原图一致。上述请求发到本地模拟服务，没有调用线上 Flash。本机也没有可连接的 SOLIDWORKS，未实测建成、保存和重开风管。
+
+此前在 0.2.1-rc.5 上也验证了插件加载和图像传输。LibreDWG 官方样图及九张随包机械图都生成了预览。后九张的转换结果没有原生尺寸标注；带标注的独立 DXF 样本另行核对了显示值和覆盖文字。
 
 Windows 上若 `pwsh` 在执行第一条命令前报告 `grantWrite ... Win32 5`，请把 Harness 当前任务目录设在本人有完全控制权的位置。本机保留 D 盘的 Python 和插件，在普通用户临时目录下新建任务文件夹，用标准工作区权限跑通了读图和桥接调用。命令能写入该任务目录，向目录外写入会被拒绝。
 
@@ -25,7 +29,7 @@ Windows 上若 `pwsh` 在执行第一条命令前报告 `grantWrite ... Win32 5`
 |------|-----|
 | 目标平台 | DeepSeek Harness **0.2.x**（Electron 桌面版 / `dsh web`） |
 | 预设 ID | `engineering` · 显示名「工程模式」· `order: 4` |
-| UI 插件 | `dsh-engineering-ui` **v1.2.0** |
+| UI 插件 | `dsh-engineering-ui` **v1.4.1** |
 | 技能 | **7** 个 |
 | 门禁 / 桥接脚本 | **12** 个核心脚本 + **14** 个物理模块 |
 | 回归测试 | **30** 个 Python + **12** 个插件测试 |
@@ -443,25 +447,17 @@ UI 插件 `dsh-engineering-ui` 只在工程模式下生效，可在设置里关�
 | 可选 | `ezdxf` + `shapely`（DXF 几何校验）、`Pillow`（看图）、Gmsh / CalculiX（高阶 FEA） |
 | 软件 | SolidWorks 2018 ~ 2025；AutoCAD（仅出 DWG 时需要） |
 
-### 一键安装（DSH 0.2.x）
+### Windows 桌面安装
+
+先启动过一次 DSH 桌面版，再解压发布包。在有 `install.ps1` 的目录中运行：
 
 ```powershell
-cd <本仓库>
-.\install-0.2.0.ps1
-# 只装指定 profile：
-.\install-0.2.0.ps1 -Profile web,desktop
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Profile desktop
 ```
 
-脚本会做四件事：
+装完完全退出并重开 DSH，在新会话里选「工程模式」，模型选 `deepseek-flash`。只使用 `dsh web` 时把 `desktop` 换成 `web`。可加 `-DryRun` 先查看改动。
 
-1. 把 `engineering/tools` 复制到 `~/.dsh/.agent-presets/engineering/tools`（门禁脚本）；
-2. 把 `engineering/skills` 复制到 `~/.dsh/skills`（技能）；
-3. 把 UI 插件复制进每个 profile 的 `node_modules`，并登记进 `package.json`
-   （`dependencies` + `dsh.profile.bundles`）；
-4. 写入宿主层 `cordis.patch.yml`（权限三档），**绝不覆盖**已有 patch。
-
-> ⚠️ 装完**必须重启 DSH**。宿主层与插件 host 半都是进程级配置，热更新无效。
-> 只改客户端半（`lib/client.js`）时，刷新页面即可。
+安装器在指定配置中登记插件，并同步共用的技能和工程脚本。已有设置、材料和建模进度会保留。旧安装若需清理已废弃的 `sw-single-line` 权限，使用同包的 `install-0.2.0.ps1`。
 
 ### 改了代码之后
 
@@ -551,7 +547,7 @@ DSH-SW-and-CAD-main/
 ├── README.md                     # 本文件
 ├── assets/gifs/                  # 四段实录动图
 ├── install-0.2.0.ps1             # DSH 0.2.x 安装（装进所有 profile）
-├── install.ps1 / install.sh      # DSH 0.1.x 安装（Win / macOS-Linux）
+├── install.ps1                   # Windows 桌面和 Web 配置安装入口
 ├── sync-to-dsh.ps1               # 源码 -> 安装副本同步
 ├── patch-incompatible.ps1        # 第三方插件 peer range 修补
 ├── RUNNING_WORKFLOW.md           # 源码级全链路追踪（从一条消息到一次 COM 调用）
@@ -750,7 +746,7 @@ What makes it different from a chat assistant that writes CAD scripts:
 Quick start (Windows, DSH 0.2.x):
 
 ```powershell
-.\install-0.2.0.ps1      # install preset + skills + UI plugin
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Profile desktop
 # then restart DSH
 ```
 

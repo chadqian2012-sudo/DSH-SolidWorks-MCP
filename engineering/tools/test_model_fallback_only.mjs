@@ -118,8 +118,8 @@ test('T5 源码：agent/request 必须受 switched 守卫', () => {
 
 test('T6 源码：request-error 必须置 switched=true，且按列表从上到下取候选', () => {
   assert.ok(HOST.includes('st.switched = true'), '接替发生时必须置 switched');
-  // 严格从上到下：应调用 nextModelCandidate，而不是从某个下标往后扫
-  assert.ok(HOST.includes('let nxt = nextModelCandidate(cfg.entries, st.tried)'),
+  // 健康候选耗尽后仍按列表回退，而不是从某个下标往后扫
+  assert.ok(HOST.includes('nextModelCandidate(cfg.entries, st.tried)'),
     '应按列表从上到下取第一个未试过的候选');
   assert.ok(!HOST.includes('_start + 1'),
     '不应再使用"从当前模型下标往后找"的旧逻辑');

@@ -140,8 +140,7 @@ ck("保存后让缓存失效", "modelChainCache = null" in SRC)
 # 2026-10-30 改成「永远从链首取第一个本轮没试过的」（见 index.js 的最终定案注释）。
 # 现在钉住的写法是 st.key = modelKey(nxt.provider, nxt.model)。
 ck("每轮都钉住候选（不是只切一次）", "st.key = modelKey(nxt.provider, nxt.model)" in SRC)
-ck("待生效候选会被 pre-step 重新写回（子代理不换模型修复）",
-   "st.pendingKey" in SRC and "selectModelRoute(agent, want)" in SRC)
+# RC1 在会话中保存模型选择；手动改选和写入失败由 model-chain-022.test.mjs 验证。
 
 # ── 3. 配置项不能误入敏感路由（它不产生副作用，但也别漏保护）───────
 sec("C. 与既有结构不冲突")

@@ -157,6 +157,41 @@ test('0.2.1 兼容：没有 agent.model.select 时保留覆盖 + retry', async (
   dispose();
 });
 
+test('0.2.2：手动选回原模型，保留选择并重新允许该服务接替请求', async () => {
+  const { all, dispose } = harness();
+  const selected = [];
+  const agent = fakeAgent('manual-flash', true, selected);
+  try {
+    await all('agent/request-error')[0](
+      { agent, provider: 'p1', turn: 1, failure: { code: 'QUOTA_EXCEEDED', model: 'm1' } }, nextFn);
+    const original = { provider: 'p1', model: 'm1' };
+    agent.model.select(original);
+    await all('agent/pre-step')[0]({ agent, turn: 2, step: 1, messages: [], modelSelection: original }, nextFn);
+    assert.deepEqual(selected, [{ provider: 'p2', model: 'm2', reasoningEffort: 'high' }, original]);
+    const other = fakeAgent('other-session', true, selected);
+    await all('agent/request-error')[0](
+      { agent: other, provider: 'p3', turn: 1, failure: { code: 'QUOTA_EXCEEDED', model: 'm3' } }, nextFn);
+    assert.deepEqual(selected.at(-1), original);
+  } finally {
+    dispose();
+  }
+});
+
+test('0.2.2：宿主未保存候选模型时不发送自动续跑消息', async () => {
+  const { all, dispose } = harness();
+  const resumed = [];
+  const agent = fakeAgent('failed-model-write', true, [], resumed);
+  agent.model.select = () => { throw new Error('model/selection append failed'); };
+  try {
+    await all('agent/request-error')[0](
+      { agent, provider: 'p1', turn: 1, failure: { code: 'QUOTA_EXCEEDED', model: 'm1' } }, nextFn);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(resumed, []);
+  } finally {
+    dispose();
+  }
+});
+
 test('0.2.2：失败后自动续跑（不需要用户手动重发）', async () => {
   const { all, dispose } = harness();
   const selected = [], resumed = [];
