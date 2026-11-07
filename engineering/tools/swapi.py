@@ -817,87 +817,11 @@ def list_material_databases():
 #
 # 数据来源：tools/physics/gb_materials.json（或环境变量 DSH_GB_MATERIALS）
 # 未导入时：国标牌号查不到 -> 如实报"未收录"，绝不猜数值。
-COMMON_MATERIALS = {
-    # ── 国标牌号（【原有数据，恢复】只登记密度与别名）────────────────────
-    # 说明：这些条目是项目原有内容，仅用于"认出用户说的牌号 + 提供密度"。
-    #   它们的【力学属性（E/屈服/抗拉/泊松比）不在此写死】——
-    #   GB/T 是国家统一标准，数值由外部 gb_materials.json 提供（见文件末尾
-    #   的 _load_gb_into_common_materials）。导入后这些牌号会自动补齐属性；
-    #   未导入时只能做密度/名称匹配，强度类判定会如实报"属性缺失"。
-    "Q235": {"density": 7850, "aliases": ["Q235", "AISI 1020", "Plain Carbon Steel", "碳钢"]},
-    "45#": {"density": 7850, "aliases": ["45", "AISI 1045", "1045"]},
-    "40Cr": {"density": 7850, "aliases": ["40Cr", "AISI 5140", "5140", "Chromium Steel"]},
-    "304": {"density": 8000, "aliases": ["304", "AISI 304", "Stainless Steel", "不锈钢"]},
-    "316": {"density": 8000, "aliases": ["316", "AISI 316"]},
-    "6061-T6": {"density": 2700, "aliases": ["6061", "6061-T6", "Aluminum Alloy 6061", "铝合金"]},
-    "7075": {"density": 2810, "aliases": ["7075", "7075-T6"]},
-    "Cr12MoV": {"density": 7700, "aliases": ["Cr12MoV", "D2", "Tool Steel"]},
-    "HT200": {"density": 7200, "aliases": ["HT200", "Gray Cast Iron", "灰铸铁"]},
-    # ── 3D 打印材料（【Bug-13/29】新增，原有数据）──────────────────────
-    # 注意：不把 PETG-CF / PETG-GF 列为别名 —— 碳纤/玻纤增强的弹性模量
-    #   (~6.5GPa) 与普通 PETG (2.0GPa) 差 3 倍，别名会让增强料被解析成普通料。
-    #   增强料应由 set_custom_material 显式登记（custom_materials.json）。
-    "PETG": {"density": 1270, "e_mpa": 2000, "yield_mpa": 40, "uts_mpa": 50,
-             "poissons_ratio": 0.37,
-             "aliases": ["PETG", "PET-G", "Copolyester"]},
-    "PLA": {"density": 1240, "e_mpa": 3500, "yield_mpa": 55, "uts_mpa": 60,
-             "poissons_ratio": 0.36,
-            "aliases": ["PLA", "PLA+", "Polylactic Acid", "聚乳酸"]},
-    "ABS": {"density": 1050, "e_mpa": 2400, "yield_mpa": 45, "uts_mpa": 50,
-             "poissons_ratio": 0.4,
-            "aliases": ["ABS", "Acrylonitrile Butadiene Styrene"]},
-    "ASA": {"density": 1070, "e_mpa": 2300, "yield_mpa": 45, "uts_mpa": 50,
-             "poissons_ratio": 0.4,
-            "aliases": ["ASA"]},
-    "Nylon": {"density": 1140, "e_mpa": 2800, "yield_mpa": 80, "uts_mpa": 85,
-             "poissons_ratio": 0.39,
-              "aliases": ["Nylon", "PA", "PA6", "PA66", "Nylon 6/6", "尼龙"]},
-    "PA12": {"density": 1010, "e_mpa": 1700, "yield_mpa": 48, "uts_mpa": 50,
-             "poissons_ratio": 0.39,
-             "aliases": ["PA12", "PA-12", "Nylon 12", "尼龙12"]},
-    "TPU": {"density": 1210, "e_mpa": 50, "yield_mpa": 30, "uts_mpa": 40,
-             "poissons_ratio": 0.48,
-            "aliases": ["TPU", "TPE", "Flexible", "热塑性聚氨酯"]},
-    "PC": {"density": 1200, "e_mpa": 2400, "yield_mpa": 65, "uts_mpa": 70,
-             "poissons_ratio": 0.37,
-           "aliases": ["PC", "Polycarbonate", "聚碳酸酯"]},
-    "POM": {"density": 1410, "e_mpa": 3100, "yield_mpa": 70, "uts_mpa": 75,
-             "poissons_ratio": 0.35,
-            "aliases": ["POM", "Delrin", "POM-C", "聚甲醛"]},
-    "PEEK": {"density": 1320, "e_mpa": 3700, "yield_mpa": 100, "uts_mpa": 110,
-             "poissons_ratio": 0.38,
-             "aliases": ["PEEK"]},
-    # ── 【通用结构钢兜底】非国标牌号，供 GB 数据未导入时使用 ──────────────
-    # 说明：这里刻意【不使用 GB/T 牌号名】（如 Q235/40Cr），避免在数据未导入
-    #   时"借用国标名义"给出数值。用的是国际通行的通用钢种命名，
-    #   属性为工程手册通用值，可在没有国标数据时维持系统可用。
-    #   一旦用户导入 gb_materials.json，国标牌号会被合并进来并【优先命中】。
-    "PlainCarbonSteel": {
-        "density": 7850, "e_mpa": 206000, "yield_mpa": 250, "uts_mpa": 400,
-        "poissons_ratio": 0.30,
-        "standard": "通用碳素结构钢（非 GB 牌号）",
-        "aliases": ["PlainCarbonSteel", "Carbon Steel", "普通碳钢", "碳素钢",
-                    "AISI 1020", "S235JR"],
-    },
-    "AlloySteel4140": {
-        "density": 7850, "e_mpa": 205000, "yield_mpa": 655, "uts_mpa": 760,
-        "poissons_ratio": 0.29,
-        "standard": "通用合金结构钢（非 GB 牌号）",
-        "aliases": ["AlloySteel4140", "AISI 4140", "42CrMo", "合金钢"],
-    },
-    "StainlessSteel304": {
-        "density": 7930, "e_mpa": 193000, "yield_mpa": 205, "uts_mpa": 520,
-        "poissons_ratio": 0.30,
-        "standard": "通用奥氏体不锈钢（非 GB 牌号）",
-        "aliases": ["StainlessSteel304", "AISI 304", "S30408", "Type 304"],
-    },
-    "Aluminum6061": {
-        "density": 2700, "e_mpa": 68900, "yield_mpa": 276, "uts_mpa": 310,
-        "poissons_ratio": 0.33,
-        "standard": "通用铝合金（非 GB 牌号）",
-        "aliases": ["Aluminum6061", "Aluminum 6061-T6", "Al 6061"],
-    },
-}
+from physics.material_db import (
+    COMMON_MATERIALS, material_names_match as _material_names_match,
+    material_name_variants as _material_name_variants,
+    material_standard_of as _material_standard_of, _MATERIAL_NAME_SEPS,
+)
 
 
 # ══ 【国标材料】从外部 JSON 合并进 COMMON_MATERIALS ══════════════════════
@@ -1142,42 +1066,8 @@ try:
 except Exception:
     pass
 
-# ── 【BUG-05/08 修复】新建零件的默认材料 ───────────────────────────────────
-# 原缺陷：从不赋材质 → 密度恒为 1000 kg/m³（水）。
-# ⚠️ 【BUG-05 二次修复 · 重要】默认值不能想当然取"最常见"的材料：
-#   实机事故：默认 Q235 → SW 库里没有 "Q235" → 回退别名 "AISI 1020"(钢,7900)，
-#   而任务要求的是 6061-T6 铝(2700) → "图纸写铝、零件是钢"。
-#   现在：
-#     ① 默认仍取 Q235（钢），但它是【可被 env/参数覆盖】的兜底，
-#        且赋材质失败时会【明确报错】，不再静默降级成别的材料；
-#     ② 真正的正确做法是让调用方按设计意图显式指定（见 new_part(material=)）；
-#     ③ 若设计工况已落盘（gate_load_case.json），
-#        swapi 会自动读取其中的材料作为默认值（见 _material_from_load_case）。
-DEFAULT_PART_MATERIAL = "Q235"
-
-
 def default_part_material_name():
-    """【GB 外部数据源配套】返回当前【可用】的默认零件材料名。
-
-    ── 语义（F-05 重定义）──────────────────────────────────────────────
-    返回【当前真的可用的】默认零件材料名；不可用时返回 None。
-
-    ══ 【F-05 修复·核心】默认材料必须是【防线合法牌号】，禁止静默降级 ═══
-    原缺陷：Q235 不在表里时，按顺序降级到 PlainCarbonSteel /
-      AlloySteel4140 / StainlessSteel304 / Aluminum6061 —— 全是【欧美牌号】；
-      最后还给了一个「任意首项」兜底（字典里第一项是什么就返回什么，
-      可能直接返回个 3D 打印材料 PLA）。
-      后果不是「能用」，而是【悄悄换材料】：
-        · 图纸/工况写 Q235（GB 碳素结构钢，σy=235MPa）；
-        · 零件里却是 PlainCarbonSteel（σy=250）或更离谱的 4140（σy=655）；
-        · 强度校核基准整体错位，而返回值看起来一切正常。
-
-    现在：
-      · Q235 可用（在库 + 有密度 + 防线认）→ 返回 "Q235"；
-      · 否则 → 返回 None。这是一个【明确的信号】，不是「没有默认值」：
-        调用方（resolve_default_material_or_raise / new_part）据此
-        显式报错并给出可执行路径，绝不让非法名流到下游去炸。
-    """
+    """返回可供明确选材的 Q235 牌号；新建零件不会自动采用它。"""
     if is_default_material_available():
         return "Q235"
     return None
@@ -1207,92 +1097,6 @@ def is_default_material_available():
         return bool(_info.get("density") or _info.get("density_kg_m3"))
     except Exception:
         return False
-
-
-def default_material_unavailable_error():
-    """【F-05 新增】默认材料不可用时的【可执行】错误说明（给 new_part 用）。
-
-    原则：绝不静默降级成欧美牌号（那会让「图纸写 Q235、零件是别的钢」），
-    而是把「怎么修」直接写清楚，让上层能照做。
-    """
-    try:
-        _st = gb_materials_status()
-    except Exception:
-        _st = {}
-    _files = (" / ".join(str(x) for x in (_st.get("searched") or [])[:3])
-              or "tools/physics/gb_materials.json")
-    return (
-        "默认材料 Q235 当前【不可用】：COMMON_MATERIALS 中没有该牌号，"
-        "或它缺少密度/力学属性。\n"
-        "本仓库【绝不】为默认值静默降级成欧美牌号（PlainCarbonSteel 等）——"
-        "那会造成「图纸写国标、零件是另一种材料」，强度校核基准整体错位。\n"
-        "可执行路径（任选其一）：\n"
-        "  ① 导入国标数据（推荐，一次到位）：把 gb_materials.json 放到 "
-        "%s 之一，或设环境变量 DSH_GB_MATERIALS 指向它，"
-        "然后调用 swapi.gb_materials_status() 确认 loaded=True；\n"
-        "  ② 显式登记该牌号：swapi.save_custom_material('Q235', "
-        "density_kg_m3=7850, e_mpa=206000, yield_mpa=235, uts_mpa=375)；\n"
-        "  ③ 显式指定其它【合法】牌号：new_part(material='6061-T6', "
-        "density=2700) —— 但要与图纸一致；\n"
-        "  ④ 显式指定密度兜底：new_part(material='Q235', density=7850)"
-        "（牌号仍需可解析，否则密度也救不回材料身份）。\n"
-        "当前国标数据状态：loaded=%s, count=%s, error=%s"
-        % (_files, _st.get("loaded"), _st.get("count"), _st.get("error")))
-
-
-def _material_standard_of(name):
-    """【Bug-C 修复】判定材料名所属的【标准体系】。
-
-    Returns: "GB" / "ASTM" / "EN" / "JIS" / "DIN" / "ISO" / None（无法判定）
-
-    判据（按牌号命名特征）：
-      · GB    —— Q235 / Q355 / 45# / 40Cr / 20CrMnTi / GCr15 / Cr12MoV /
-                 HT200 / QT500-7 / 2A12 / LY12 / ZCuSn10 / H62 / ZL104 /
-                 06Cr19Ni10 / 022Cr17Ni12Mo2（GB/T 新牌号）
-      · ASTM  —— AISI/ASTM 数字牌号（1020/1045/4140/4340）、A36、Grade 5
-      · EN    —— S235JR / S355 / 1.4301 等
-      · JIS   —— SUS304 / S45C 等
-      · ISO   —— ISO 前缀
-    """
-    s = str(name or "").strip()
-    if not s:
-        return None
-    sl = s.lower()
-    # ── GB 特征（优先级最高：这些牌号形态独一无二）──────────────────
-    import re as _re
-    if _re.search(r"(^|[^a-z])q\d{3}", sl):                    # Q235 / Q355
-        return "GB"
-    if _re.search(r"\b(ht|qt|yt|zt)\d{3}", sl):                 # HT200 / QT500-7
-        return "GB"
-    if _re.search(r"\b(gcr|zcusn|znal|zal|zcu)", sl):           # GCr15 / ZCuSn10
-        return "GB"
-    if _re.search(r"\b(cr12mov|20crmnti|40cr|65mn|38crmoala)\b", sl):
-        return "GB"
-    if _re.search(r"\b(2a12|ly12|5a02|7a04|2a11)\b", sl):       # 硬铝旧/新牌号
-        return "GB"
-    if _re.search(r"^\d{2,3}#?$", sl):                          # 45 / 45#
-        return "GB"
-    if _re.search(r"^(06cr|022cr|12cr|10cr|0cr|1cr|2cr|3cr)", sl):
-        return "GB"                                             # GB/T 20878 不锈钢
-    if _re.search(r"\bh62\b|\bh59\b|\bh68\b|\bzl\d{3}\b", sl):
-        return "GB"
-    # ── 欧美日标准 ──────────────────────────────────────────────────
-    if _re.search(r"\baisi\b|\bastm\b|\bsae\b|\ba36\b", sl):
-        return "ASTM"
-    if _re.search(r"^s\d{3}(jr|j0|j2|mc|ml)?$|\b1\.\d{4}\b", sl):
-        return "EN"
-    if _re.search(r"^sus\d|\bs\d{2}c\b|\bsk\d\b", sl):
-        return "JIS"
-    if _re.search(r"^iso\b|\biso\d", sl):
-        return "ISO"
-    if _re.search(r"^din\b|\bck\d{2}\b|\b42crmo4\b", sl):
-        return "DIN"
-    # 纯数字牌号（1020/1045/4140/4340/304/316）→ 按 AISI/通用不锈钢处理
-    if _re.search(r"^(10|11|12|41|43|86)\d{2}$", sl):
-        return "ASTM"
-    if _re.search(r"^(304|316|316l|321|410|420|430)$", sl):
-        return "ASTM"
-    return None
 
 
 # 标准体系的"国家/地区"归类：GB 与欧美日属【不同体系】，互换需显式确认
@@ -1406,55 +1210,17 @@ def _is_equivalent_naming(a, b):
 
 
 def _gb_material_advice(name):
-    """【R9 修复】缺国标牌号时，给出**可执行**的落地路径。
-
-    台账 BUG-30/56 的核心痛点：SolidWorks 官方材质库
-    （SolidWorks Materials / DIN Materials）**没有 GB 牌号**
-    （Q235 / 45 / 40Cr / 20CrMnTi / GCr15 / HT200 / ZL104 …）。
-    于是 set_material("Q235") 必然找不到 → 旧实现回退到最像的
-    AISI 1020 / 普通碳钢，把"国标"悄悄变成"美标"。
-
-    正确落地路径只有两条（都能让 .sldprt 里真的是那个牌号）：
-      ① 用 set_custom_material() 把该牌号连同 E/ν/σy/σb/ρ 登记到
-         custom_materials.json，再赋材 —— 本仓库的凭据/防线认这条路；
-      ② 在 SolidWorks 里新建自定义材质（.sldmat），把牌号写进
-         Custom Materials 库，再用 set_material(name, database="Custom Materials")。
-    这里把两条都写清楚，并**明确禁止**"近似成欧美标"。
-
-    Args:
-        name: 用户请求的材料名
-    Returns:
-        str: 可操作建议（可直接放进 result["hint"]）
-    """
-    _nm = str(name or "").strip() or "<该牌号>"
-    _std = _material_standard_of(_nm)
-    _is_gb = (_std == "GB")
-    _NL = chr(10)
-    _head = (
-        ("【国标牌号缺失】%r 属于 %s 标准体系，SolidWorks 官方材质库"
-         "（SolidWorks Materials / DIN Materials）【不收录 GB 牌号】—— "
-         "这不是调用方式错了，是库本身没有。"
-         % (_nm, _std or "未知")) + _NL)
-    _paths = _NL.join((
-        "可执行路径（二选一，都能让 .sldprt 里真的是该牌号）：",
-        "  ① 登记自定义材料（推荐，本仓库凭据/防线认这条路）：",
-        "     m.set_custom_material(%r, e_mpa=..., yield_mpa=..., uts_mpa=..., "
-        "density_kg_m3=...)" % (_nm,),
-        "     它会写入 custom_materials.json 并再次尝试赋材；",
-        "  ② 在 SolidWorks 内新建自定义材质库（.sldmat）并把该牌号加进 "
-        "Custom Materials，然后：",
-        "     m.set_material(%r, database='Custom Materials')" % (_nm,),
-    )) + _NL
-    _warn = _NL.join((
-        "⛔ 严禁【近似成欧美标】：把 %r 写成 AISI 1020 / 普通碳钢 之类，"
-        "会让图纸与零件材料不一致（屈服强度可能差 40%%+），"
-        "质量/强度/寿命校核全部失效且无人察觉。" % (_nm,),
-        "   如确需跨标准替代，必须显式传 allow_cross_standard=True "
-        "并在报告中如实标注，由人工确认。",
-    ))
-    if _is_gb:
-        return _head + _paths + _warn
-    return (_paths + _warn)
+    """材料未写入时给出停止重试后的可执行选择。"""
+    nm = str(name or "").strip() or "<该牌号>"
+    return (
+        "材料 %r 尚未在 SolidWorks 中按同牌号验证；已停止，不要自动重建或重复赋材。\n"
+        "请提供包含准确牌号的自定义 .sldmat（Custom Materials），确认库名后再执行：\n"
+        "  m.set_material(%r, database='Custom Materials')\n"
+        "set_custom_material() 只登记 Python 侧属性并尝试已有 SW 材质库；"
+        "登记 custom_materials.json 不会创建 SW 材质，也不能单独证明赋材成功。\n"
+        "严禁近似成欧美标；若要跨标准替代，须用户确认，并显式传 "
+        "allow_cross_standard=True、如实标注。若用户只需几何，可由用户决定不指定材料。"
+        % (nm, nm))
 
 
 # ── 【A-30 修复】SW 回读的三段式复合名分隔符 ────────────────────────────────
@@ -1467,46 +1233,6 @@ def _gb_material_advice(name):
 #   请求名归一化后相等，就认定是同一种材料（见 _material_name_variants /
 #   _material_names_match）。这样既保住"逐字比对、不做同义词替换"的不变量，
 #   又不会因为 SW 的拼接顺序不同而误判为"材料被替换"。
-_MATERIAL_NAME_SEPS = ("|", "\\", ":", "：")
-
-
-def _material_name_variants(name):
-    """把一个材质名拆成【全部可比较的候选写法】（顺序无关、去重、已归一化）。
-
-    例：
-      "SolidWorks Materials|普通碳钢"      → {"solidworks materials|普通碳钢", "普通碳钢"}
-      "SolidWorks Materials|钢|Q235"       → {..., "solidworks materials|钢|q235", "钢|q235", "q235"}
-    【不做同义词替换】，只做"拆段 + 折叠空白 + 忽略大小写"。
-    """
-    s = str(name or "").strip()
-    if not s:
-        return []
-    out = []
-    def _add(x):
-        x = " ".join(str(x or "").split())
-        if x:
-            k = x.casefold()
-            if k not in out:
-                out.append(k)
-    _add(s)
-    # 逐级剥掉"最左边一段"，把所有后缀都作为候选（顺序无关）
-    cur = s
-    for _sep in _MATERIAL_NAME_SEPS:
-        if _sep in cur:
-            _parts = [p.strip() for p in cur.split(_sep)]
-            _parts = [p for p in _parts if p]
-            # 所有后缀（"A|B|C" → "B|C", "C"）+ 所有单段（"A","B","C"）
-            for _i in range(1, len(_parts)):
-                _add(_sep.join(_parts[_i:]))
-            for _p in _parts:
-                _add(_p)
-    # 常见库名前缀（"SolidWorks Materials - xxx" 之类）
-    for sep in (" - ", " – ", " — "):
-        if sep in s:
-            _add(s.split(sep)[-1])
-    return out
-
-
 def _normalize_material_name(name):
     """【R9 修复】归一化材质名，供"读回校验/跨标准判定"逐字比对。
 
@@ -1539,34 +1265,6 @@ def _normalize_material_name(name):
     return (_bare[0] if _bare else _vs[-1])
 
 
-def _material_names_match(actual, requested):
-    """【R9 修复】判断"SW 内部回读的材质名"是否就是"我们请求/写入的名字"。
-
-    只做**归一化后逐字比对**：
-      · 相同 → True（真的是同一个材料）
-      · 不同 → False（哪怕是"看起来相近"的牌号，也不放过）
-
-    ★ 关键设计：**不允许任何模糊匹配**。
-      历史实现用 startswith/包含关系做"近似匹配"，结果 Q235 → AISI 1020
-      这种跨标准替换被当成匹配通过 —— 就是 BUG-55「跨标准替代被误判」。
-      跨标准替代必须走 _detect_cross_standard 显式标记并由上层拒绝，
-      不能在这里被悄悄吸收。
-    """
-    # ── 【A-30 修复】按【候选集合】求交集，而不是比"各自最后一段" ──────────
-    # 旧实现：两侧各取 split("|")[-1] 再逐字比较。三段式 / 前后段顺序不同的
-    #   复合名（"SolidWorks Materials|普通碳钢|Q235" vs "普通碳钢"）会取到不同段，
-    #   于是【真实一致】的材料被判成不一致 → sw_internal_matches_request=false
-    #   假阳性 → 防线①对已正确赋材的零件反复报"材料被替换"。
-    # 现在：两侧各展开成"全部可能写法"的集合，【只要有任一写法相同】即为同一材料。
-    #   仍然不做同义词替换、不做 startswith/包含匹配 —— 跨标准替代依旧不会
-    #   在这里被悄悄吸收（Q235 与 AISI 1020 的候选集合没有任何交集）。
-    _av = _material_name_variants(actual)
-    _rv = _material_name_variants(requested)
-    if not _av or not _rv:
-        return False
-    return bool(set(_av) & set(_rv))
-
-
 def _read_back_material(model):
     """【R9 修复】写入材质后，**独立回读** SW 内部真实生效的材质名。
 
@@ -1589,18 +1287,31 @@ def _read_back_material(model):
     Returns:
         {"name": str|None, "method": str|None, "error": str|None}
     """
-    out = {"name": None, "method": None, "error": None}
-    _md = getattr(model, "model", None)
-    if _md is None:
+    out = {"name": None, "database": None, "configuration": None,
+           "method": None, "error": None}
+    _doc = getattr(model, "model", None)
+    if _doc is None:
         out["error"] = "model 为 None"
         return out
-    # ① GetMaterialPropertyName2(ConfigName, Database) —— 方法，2 参
+    _md = model._part_doc
     try:
-        _nm = _com_get(_md, "GetMaterialPropertyName2", "", "")
-        if _nm is not None and str(_nm).strip():
-            out["name"] = str(_nm).strip()
-            out["method"] = "GetMaterialPropertyName2"
-            return out
+        _cfg = str(_doc.ConfigurationManager.ActiveConfiguration.Name or "")
+    except Exception:
+        _cfg = ""
+    out["configuration"] = _cfg
+    # Database 是 BSTR 输出参数；generated dispatch 还可能返回 (name, database)。
+    try:
+        _db = win32com.client.VARIANT(
+            getattr(pythoncom, "VT_BYREF", 16384) | getattr(pythoncom, "VT_BSTR", 8), "")
+        _nm = _com_get(_md, "GetMaterialPropertyName2", _cfg, _db)
+        if isinstance(_nm, (tuple, list)):
+            _nm, _database = (_nm[0] if _nm else None), (_nm[1] if len(_nm) > 1 else None)
+        else:
+            _database = getattr(_db, "value", None)
+        out["name"] = str(_nm).strip() if _nm is not None and str(_nm).strip() else None
+        out["database"] = _database
+        out["method"] = "GetMaterialPropertyName2"
+        return out
     except ComMemberError as _e1:
         out["error"] = str(_e1)
     except Exception as _e1b:
@@ -1661,148 +1372,16 @@ def _detect_cross_standard(requested, applied):
     return False, ""
 
 
-def _material_from_load_case():
-    """【BUG-05 二次修复】从门禁落盘的载荷工况里读设计材料。
-
-    门禁 select/provide_context 阶段已把"任务要求的材料"写进
-    tools/load_cases/gate_load_case.json（如 Aluminum 6061-T6）。
-    建模时若调用方没显式指定材料，用它是【最贴合设计意图】的默认值 ——
-    从根本上避免"门禁要求铝、零件默认成钢"这类事故。
-
-    Returns: 材料名（str）或 None
-    """
-    try:
-        p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "load_cases", "gate_load_case.json")
-        if not os.path.isfile(p):
-            return None
-        with open(p, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        mat = d.get("material") or {}
-        # 优先用库内可解析的牌号：id 映射回常用名，其次 name
-        mid = str(mat.get("id") or "")
-        _ID_TO_NAME = {
-            # ── 【国标材料修复】GB 牌号 id → SW 中文材料库常用名 ──────────
-            #   门禁现在落盘的是 GB id（GB_Q235 / GB_40CR / GB_HT200…），
-            #   这里必须能把它换回 SW 材质库里真实存在的牌号名，
-            #   否则赋材质会找不到、密度又掉回 1000（水）。
-            "GB_Q235": "Q235", "GB_Q355": "Q355", "GB_45": "45",
-            "GB_40CR": "40Cr", "GB_20CRMNTI": "20CrMnTi",
-            "GB_GCr15": "GCr15", "GB_CR12MOV": "Cr12MoV",
-            "GB_65MN": "65Mn", "GB_HT200": "HT200", "GB_QT500_7": "QT500-7",
-            "GB_2A12": "2A12", "GB_6061": "6061-T6", "GB_7075": "7075",
-            "GB_ZL104": "ZL104",
-            "GB_06CR19NI10": "304", "GB_022CR17NI12MO2": "316",
-            "GB_ZCUSN10": "ZCuSn10P1", "GB_H62": "H62",
-            # ── 兼容历史欧美标 id（旧工况文件仍可能带这些）──────────────
-            "AL_6061_T6": "6061-T6", "AL_6061": "6061-T6", "AL_7075": "7075",
-            "AL_5052": "5052", "AL_1060": "1060",
-            "ST_API_S235": "Q235", "ST_API_1020": "Q235",
-            "ST_API_4140": "40Cr", "ST_API_4340": "40Cr",
-            "ST_STAINLESS_304": "304", "ST_STAINLESS_316": "316",
-            "TI_GRADE5": "Ti-6Al-4V", "TI_GRADE1": "Ti",
-            "ABS": "ABS", "PC_POLYCARBONATE": "PC", "NYLON_6_6": "Nylon",
-        }
-        if mid in _ID_TO_NAME:
-            return _ID_TO_NAME[mid]
-        # ── 【F-05 修复·核心】只允许返回【防线合法牌号】，绝不返回标准文件全名 ──
-        # 事故（两小屋独立复现）：工况文件里
-        #     {"id": "Q235", "name": "GB/T 700-2006 碳素结构钢"}
-        #   id 是 "Q235"（已合法），但不在上面的 _ID_TO_NAME 表里（表里只有
-        #   "GB_Q235" 这类 GB_ 前缀 id）→ 继续往下走，拿 name 做正则匹配。
-        #   而 name 是【标准文件的名字】("GB/T 700-2006 碳素结构钢")，里面
-        #   根本没有 "Q235" 子串 → 正则不中 → **原样 return nm**。
-        #   于是 new_part 默认材料 = "GB/T 700-2006 碳素结构钢"，
-        #   is_valid_material() 判 False → 凭据 material_invalid=true、
-        #   不签发 → 材料防线直接拦下，正常建模路径必然走不通。
-        # 修复：按【可靠性从高到低】三条路取牌号，且每条都必须过
-        #   is_valid_material() 校验 —— 交不出合法名就返回 None，
-        #   由调用方回落到 DEFAULT_PART_MATERIAL（Q235），绝不把标准名当牌号。
-        def _as_legal_grade(_cand):
-            """把一个候选名规整成合法牌号；不合法返回 None。"""
-            _c = str(_cand or "").strip()
-            if not _c:
-                return None
-            try:
-                _ok, _info, _ = is_valid_material(_c)
-                if _ok and _info:
-                    # 命中就用 canonical（"GB_Q235" → "Q235"），保证是牌号口径
-                    return str(_info.get("canonical") or _c)
-            except Exception:
-                pass
-            return None
-
-        nm = str(mat.get("name") or "").strip()
-        # ① id 本身可能就是牌号（"Q235" / "Q355" / "6061-T6" / "ABS"）
-        _g = _as_legal_grade(mid)
-        if _g:
-            return _g
-        # ② name 可能正好是某个牌号的【标准全名】——
-        #    COMMON_MATERIALS 每条都有 "name" 字段（如 Q235 的
-        #    "GB/T 700-2006 碳素结构钢"），这里做一次【反向查表】。
-        #    这是"标准名 → 牌号"最准的一条路：表内是精确串比对，不猜。
-        if nm:
-            try:
-                for _canon, _info in COMMON_MATERIALS.items():
-                    if str((_info or {}).get("name") or "").strip() == nm:
-                        return _canon
-            except Exception:
-                pass
-        # ③ 最后才用正则从 name 里抠牌号（如 "Q235 碳素结构钢 (GB/T 700)"）
-        if nm:
-            import re as _re
-            m = _re.search(
-                r"(6061(?:-T\d)?|7075|5052|1060|2024|2A12|LY12|304|316|316L|"
-                r"06Cr19Ni10|022Cr17Ni12Mo2|Q235|Q355|Q345|40Cr|20CrMnTi|"
-                r"GCr15|Cr12MoV|65Mn|HT200|HT250|QT500-7|ZCuSn10P1|H62|"
-                r"ZL104|Ti-6Al-4V)", nm)
-            if m:
-                _g = _as_legal_grade(m.group(1))
-                if _g:
-                    return _g
-    except Exception:
-        pass
-    return None
-
-
 def default_part_material():
-    """【BUG-05 二次修复】解析本次建模应使用的默认材料。
-
-    优先级：
-      ① 环境变量 DSH_PART_MATERIAL（用户/编排显式指定，最高优先）
-      ② 门禁落盘工况里的设计材料（gate_load_case.json）
-      ③ 内置兜底 DEFAULT_PART_MATERIAL（Q235 钢）
-    """
-    try:
-        env = os.environ.get("DSH_PART_MATERIAL")
-        if env and str(env).strip():
-            return str(env).strip()
-    except Exception:
-        pass
-    lc = _material_from_load_case()
-    if lc:
-        return lc
-    # 【GB 外部数据源配套】默认值必须【当前真的可用】：
-    #   未导入国标数据时 Q235 不在库中，硬用会导致赋材质失败。
-    # 【F-05 修复】default_part_material_name() 现在【只会】返回合法牌号或 None，
-    #   不再降级成 PlainCarbonSteel 之类的欧美牌号 —— 见该函数 docstring。
-    #   若它返回 None，这里【必须】返回 None 而不是硬塞一个名字：
-    #   调用方（new_part）据此显式报错并给出可执行路径，
-    #   绝不让一个"防线不认识的材料名"流到下游去炸。
-    return default_part_material_name()
+    """只读取调用方明确指定的环境材料；未指定时保留纯几何建模。"""
+    return (os.environ.get("DSH_PART_MATERIAL") or "").strip() or None
 
 
 def resolve_default_material_or_raise(material=None, density=None):
-    """【F-05 新增】确定本次建模要用的默认材料（并给出可用性诊断）。
+    """解析明确指定的材料；未指定时不推测牌号，也不沿用历史工况。
 
-    这是 new_part 与 default_part_material 之间的【唯一裁定点】：
-      · 返回 {"ok": True, "material": <合法牌号>, "density": <kg/m3>, "source": ...}
-      · 无法给出【合法】默认材料时，返回 ok=False + error（含可执行路径），
-        **绝不**返回一个"看起来能用、实际防线不认"的名字。
-
-    优先级（与既有文档一致）：
-      显式 material 参数 > DSH_PART_MATERIAL 环境变量
-      > gate_load_case.json 材料 > DEFAULT_PART_MATERIAL(Q235)
+    显式 material 参数优先于 DSH_PART_MATERIAL；二者都没有时返回
+    material=None。只有明确指定的材料才需要合法性与密度校验。
 
     Args:
         material: 调用方显式指定的材料名（可为 None）
@@ -1815,7 +1394,9 @@ def resolve_default_material_or_raise(material=None, density=None):
         _d = float(density) if density is not None else None
     except Exception:
         _d = None
-    out = {"ok": False, "material": None, "density": _d, "source": None}
+    out = {"ok": False, "material": None, "density": _d, "source": None,
+           "error_code": "MATERIAL_UNVERIFIED", "retryable": False,
+           "requires_user_action": True}
     # ① 显式参数（最高优先，且同样要求合法 —— 非法名照样显式报错）
     _nm = None
     _src = None
@@ -1823,25 +1404,12 @@ def resolve_default_material_or_raise(material=None, density=None):
         _nm = str(material).strip()
         _src = "explicit(new_part material=)"
     else:
-        try:
-            _env = (os.environ.get("DSH_PART_MATERIAL") or "").strip()
-        except Exception:
-            _env = ""
+        _env = default_part_material()
         if _env:
             _nm, _src = _env, "env(DSH_PART_MATERIAL)"
-        else:
-            _lc = _material_from_load_case()
-            if _lc:
-                _nm, _src = _lc, "load_case(gate_load_case.json)"
-            else:
-                _nm, _src = default_part_material_name(), "default(DEFAULT_PART_MATERIAL)"
     if not _nm:
-        # 走不到"名称"这一步 —— 默认材料根本不可用
-        out["error"] = default_material_unavailable_error()
-        out["hint"] = ("调用方无法拿到合法默认材料。最省事的修法："
-                       "new_part(material='Q235', density=7850) 显式指定，"
-                       "或先导入 gb_materials.json。")
-        out["source"] = _src
+        out.update(ok=True, density=None, source="unspecified", requires_user_action=False,
+                   error_code=None)
         return out
     # ② 合法性校验：不合法就【显式失败】，绝不静默换成别的材料
     _ok, _info, _why = is_valid_material(_nm)
@@ -1876,6 +1444,8 @@ def resolve_default_material_or_raise(material=None, density=None):
     out["source"] = _src
     out["canonical"] = (_info or {}).get("canonical") or _nm
     out["ok"] = True
+    out["requires_user_action"] = False
+    out["error_code"] = None
     return out
 
 # ── 【BUG-08 修复】SW 导出 DXF 的标准图层名（与 CADX mechanical 规则一致）──
@@ -4145,14 +3715,17 @@ def new_part(sw=None, material=None, density=None):
 
     Bug 10 修复: 新建前先关闭所有遗留文档，避免干扰。
 
-    ── 【BUG-05/08 修复】新建时必须赋材质，杜绝"密度恒为 1000（水）" ──────
-    原缺陷：new_part 从不赋材质 → SW 用默认密度 1000 kg/m³（水）→
-      质量/重心/转动惯量全错、工程图材料栏空白、physics 报告 material 显示 "?"、
-      强度与寿命校核基准不可信（"30 年寿命校核"直接失效）。
-    修复：新建后立即尝试赋材质（默认 Q235 碳钢，可用 material= 指定）；
-      赋材质结果写入 m.material_result，失败时进 warnings 而非静默。
-      density= 可强制写入密度（材质库找不到时的兜底）。
+    未指定 material 或 DSH_PART_MATERIAL 时只创建几何，不赋默认材料。
+    明确指定时登记材料，首个实体生成后赋材并独立读回。
+    未赋材的零件不能据此给出可信质量、强度或寿命结论。
     """
+    _mres = resolve_default_material_or_raise(material=material, density=density)
+    if not _mres.get("ok"):
+        _error = RuntimeError(
+            "new_part 指定的材料不可用；已停止，不要自动重建或重复赋材。\n%s\n%s"
+            % (_mres.get("error"), _mres.get("hint") or ""))
+        _error.result = _mres
+        raise _error
     if sw is None:
         sw = get_sw()
     _disable_snapping(sw)
@@ -4235,56 +3808,19 @@ def new_part(sw=None, material=None, density=None):
         m._reset_plane_context(None, reason="new_part")
     except Exception:
         pass
-    # ── 【BUG-05/08 修复】登记待赋材质（延迟到有实体后真正写入）──────────
-    # ⚠️ 实机教训（2026-09-27）：材质【不能】在 new_part 里立即写入 ——
-    #   此刻零件还是空的，没有任何 IBody2，set_material 必然报
-    #   "零件没有实体（IBody2）"，密度仍停在 1000 kg/m³（水）。
-    #   而模型通常写完第一个特征（extrude/revolve）才产生实体，
-    #   所以正确做法是：这里只【记住要赋什么】，等第一个实体出现后
-    #   由 _try_apply_pending_material() 自动补上。
-    #   另：save() 是最后一道保险，若到保存时仍未赋成功会在返回值里显式告警。
-    # ── 【Bug-14 修复】显式传参必须最高优先，并记录来源供审计 ────────────
-    # 原缺陷：材质来源不透明 —— 调用方无法区分"我显式传的 PETG 生效了"还是
-    #   "被 load_case 里的 6061-T6 覆盖了"。实测需要这种可追溯性来排查
-    #   "图纸材料 vs 实际材料"不一致。
-    # 优先级（与文档一致）：显式 material 参数 > DSH_PART_MATERIAL 环境变量
-    #   > gate_load_case.json 材料 > DEFAULT_PART_MATERIAL。
-    # ── 【F-05 修复】统一由 resolve_default_material_or_raise 裁定 ──────────
-    # 原实现分三路各自写 _pending_material，且【不校验合法性】：
-    #   · load_case 路径会把标准文件全名 "GB/T 700-2006 碳素结构钢" 当材料名；
-    #   · 默认路径硬塞 DEFAULT_PART_MATERIAL，不管它在不在库里；
-    #   · 三条路都【不带密度】—— 这是"读回 1000（水）"的直接成因。
-    # 现在：合法性 + 密度解析集中在一处裁决；非法即显式报错，绝不静默降级。
-    _mres = resolve_default_material_or_raise(material=material,
-                                              density=density)
-    if not _mres.get("ok"):
-        # 材料身份不可信 → 明确失败（不建出一个"没有材质身份"的零件）
-        raise RuntimeError(
-            "new_part 无法确定合法的默认材料：\n%s\n%s"
-            % (_mres.get("error"), _mres.get("hint") or ""))
+    # 空零件没有实体，明确指定的材料延迟到首个实体生成后写入。
     m._pending_material = _mres.get("material")
     m._material_source = _mres.get("source")
-    # ★ 密度【随牌号表带出】（Q235 → 7850），不再依赖 SW 库近似值。
-    #   显式 density 参数优先（已在 resolve_default_material_or_raise 内处理）。
     m._pending_density = _mres.get("density")
     m._material_canonical = _mres.get("canonical")
-    # ── 【观察点 13 修复】单独记录【用户传入的原始材料名】，且永不清空 ──────
-    # `_pending_material` 在材质成功写入后会被置 None（见
-    # _try_apply_pending_material）。于是 save() 生成凭据时只能回退到从 SW
-    # 读回的【映射名】（如 PETG → SW 无此牌号 → 近似成 PET），导致：
-    #   · 凭据写 requested_material = "PET"（而非用户要的 "PETG"）；
-    #   · `set_custom_material("PETG", ...)` 登记的 PETG 属性对校验【不生效】
-    #     （因为校验用的是映射名 PET）；
-    #   · 只要映射名不在合法库中，凭据就判 material_invalid —— 用户明明
-    #     登记了 PETG 也无济于事。
-    # 这里保存一份原始名，供 save() 优先按【用户本意】校验与记录。
     m._requested_material = m._pending_material
     m._requested_material_source = m._material_source
-    m.material_result = {"ok": False, "method": None, "pending": True,
-                         "material": m._pending_material,
-                         "applied_material": None,
-                         "source": m._material_source,
-                         "note": "待首个实体生成后自动赋材质（BUG-05）"}
+    if m._pending_material:
+        m.material_result = {"ok": False, "method": None, "pending": True,
+                             "material": m._pending_material,
+                             "applied_material": None,
+                             "source": m._material_source,
+                             "note": "待首个实体生成后自动赋材质"}
     if VISUAL_MODE:
         _show_main_window(maximize=True)
         import time
@@ -4659,10 +4195,17 @@ class SWModel:
             # 极端情况下连 early() 本身都异常：必须回退，不能中断建模
             return getattr(self, "model", None)
 
+    @property
+    def _part_doc(self):
+        """零件专有 API 使用 IPartDoc；普通离线对象不参与 COM 转换。"""
+        if getattr(self.model, "_oleobj_", None) is not None:
+            return early(self.model, "IPartDoc")
+        return self.model
+
     def _has_solid_body(self):
         """零件当前是否已有实体（IBody2）。材质必须等到这时才能写入。"""
         try:
-            _b = self.model.GetBodies2(0, False)   # 0 = swSolidBody
+            _b = self._part_doc.GetBodies2(0, False)   # 0 = swSolidBody
             if not _b:
                 return False
             try:
@@ -4672,80 +4215,27 @@ class SWModel:
         except Exception:
             return False
 
-    def _try_apply_pending_material(self, force=False):
+    def _try_apply_pending_material(self):
         """【BUG-05/08 修复】实体出现后自动补赋材质。
 
         实机教训（2026-09-27 真实流程暴露）：new_part 阶段零件是空的，
         没有 IBody2 → set_material 必然报"零件没有实体" → 密度停在 1000（水）。
         因此把赋材质【延迟】到"第一个实体生成之后"。
         每个会产出实体的特征（extrude/revolve）末尾调用本方法，
-        成功一次即清空 pending，不重复写 COM。
+        请求交给赋材入口后即清空 pending；成功或失败都不自动重试。
 
-        Args:
-            force: True 时即使无 pending 也再校验一次（供 save 阶段兜底）
         Returns:
             dict|None —— 实际执行了赋值时返回 set_material 的结果
         """
         name = self._pending_material
-        if not name and not force:
-            return None
-        if not force and self.material_result and self.material_result.get("ok"):
+        if not name:
             return None
         if not self._has_solid_body():
             return None
         try:
-            res = self.set_material(name, density=self._pending_density)
-            # ══ 【F-05 修复】SW 内置库写不进去 → 走【自定义材质登记路径】══════
-            # 事故：new_part(material="Q235") 正常建模路径必然失败。
-            #   SW 官方材质库【不收录 GB 牌号】，set_material 走遍
-            #   (库 × 候选名) 仍写不进 → 读回密度掉回 1000（水）→ 防线拦下。
-            #   唯一跑得通的路径是手工 set_custom_material(...) 登记。
-            # 现在把它固化进默认链路：内置库失败后【自动】按
-            #   custom_materials.json + 牌号表属性登记并重写，
-            #   属性（E/σy/σb/ρ）取自 resolve_material_props（Q235→7850）。
-            #   —— 这不是"降级成别的材料"，而是"用同一个牌号换一条写入通道"。
-            if not res.get("ok"):
-                _cf = self._apply_material_via_custom_registry(
-                    name, density=self._pending_density)
-                if _cf and _cf.get("ok"):
-                    # 保留内置库失败的证据，便于审计"为什么走了自定义通道"
-                    _cf["sw_library_attempt"] = {
-                        "ok": False,
-                        "error": (res.get("error") or "")[:400],
-                        "method": res.get("method"),
-                    }
-                    res = _cf
-            # == [A-25 修复] 不得用【失败】结果覆盖已成功的 material_result ==
-            # 原实现无条件 self.material_result = res。实测（2026-11-01）：
-            #   [r4] set_custom_material: ok=True（40Cr / ρ7820 已写入）
-            #   [r4] sidecar: ok=False density=7849.99
-            #   AssertionError: material ok != True
-            # 链路：save() 内部会【再跑一次】_try_apply_pending_material(force)
-            #   （见 save 的"材质兜底赋值"段），这次 SW 库候选全部 ρ=1000 被拒
-            #   -> res.ok=False -> 把已经签好 ok=True/ρ7820 的结论覆盖成
-            #   "水"记录 -> 侧车 ok=false -> 防线①拒收 -> 小屋删件重建死循环。
-            # 语义：material_result 是"这个零件当前的材质事实"，
-            #   一次【未成功】的尝试不应该降级已有的事实；但成功的结果
-            #   永远可以覆盖（例如换了材料）。
-            _prev_mr = self.material_result if isinstance(self.material_result, dict) else {}
-            if res.get("ok") or not _prev_mr.get("ok"):
-                self.material_result = res
-            else:
-                # 保留成功结论，但把这次失败尝试留痕（可审计，不静默）
-                _keep = dict(_prev_mr)
-                _try = _keep.get("rejected_attempts")
-                if not isinstance(_try, list):
-                    _try = []
-                _try.append({
-                    "ok": False,
-                    "requested": name,
-                    "error": (res.get("error") or "")[:400],
-                    "method": res.get("method"),
-                    "note": "本次重新赋材失败，已保留先前成功结论（A-25）",
-                })
-                _keep["rejected_attempts"] = _try[-10:]
-                self.material_result = _keep
-                res = _keep
+            density = self._pending_density
+            res = self.set_material(name, density=density)
+            self.material_result = res
             if res.get("ok"):
                 self._pending_material = None
                 self._pending_density = None
@@ -4757,105 +4247,6 @@ class SWModel:
             self.material_result = {"ok": False, "error": repr(e)}
             self._warn("赋材质异常(%s): %r" % (name, e))
             return self.material_result
-
-    def _apply_material_via_custom_registry(self, name, density=None):
-        """【F-05 新增】用【自定义材质登记路径】写入材料（GB 牌号的正规出路）。
-
-        ══ 为什么需要它 ══════════════════════════════════════════════════════
-        SolidWorks 官方材质库（SolidWorks Materials / DIN Materials）
-        【不收录 GB/T 牌号】（Q235 / 45# / 40Cr …），这是库的事实，不是
-        调用方式错了。所以对国标牌号，唯一能既保住"图纸牌号"又保住
-        "零件里真的是这个材料"的路径是：
-          ① 把该牌号的属性登记进 custom_materials.json（可审计、可复用）；
-          ② 用 SetMaterialPropertyName2 把【该牌号名 + 密度】写进零件。
-        本方法就是这么做的，并且和 set_custom_material 共用同一份属性来源
-        （resolve_material_props），保证"台账 / SW / 凭据"三处口径一致。
-
-        Args:
-            name:    材料牌号（如 "Q235"）
-            density: 显式密度；None 则取牌号表（Q235 → 7850）
-        Returns: dict（形如 set_material 的返回体）
-        """
-        out = {"ok": False, "method": None, "material": name,
-               "warnings": [], "error": None}
-        nm = str(name or "").strip()
-        if not nm:
-            out["error"] = "材料名为空"
-            return out
-        _ok, _info, _why = is_valid_material(nm)
-        if not _ok:
-            out["error"] = "材料 %r 非法（%s）—— 不登记、不写入" % (nm, _why)
-            out["hint"] = _gb_material_advice(nm)
-            return out
-        props = resolve_material_props(nm) or {}
-        _canon = (_info or {}).get("canonical") or props.get("name") or nm
-        _d = density
-        if _d is None:
-            _d = ((_info or {}).get("density")
-                  or (_info or {}).get("density_kg_m3")
-                  or props.get("density_kg_m3"))
-        _e = props.get("e_mpa") or (_info or {}).get("e_mpa")
-        _y = props.get("yield_mpa") or (_info or {}).get("yield_mpa")
-        _u = props.get("uts_mpa") or (_info or {}).get("uts_mpa")
-        _nu = props.get("poissons_ratio") or (_info or {}).get("poissons_ratio")
-        # ① 登记（幂等）—— 让材料身份可审计、可复用
-        try:
-            reg = save_custom_material(nm, e_mpa=_e, yield_mpa=_y, uts_mpa=_u,
-                                       density_kg_m3=_d, poissons_ratio=_nu,
-                                       note="F-05: new_part 默认链路自动登记"
-                                            "（SW 官方库不收录 GB 牌号）")
-            out["registry"] = reg
-        except Exception as _e_reg:
-            out.setdefault("warnings", []).append("登记自定义材料失败: %r" % (_e_reg,))
-        # ② 写入 SW（先把密度打头试，让"读回 1000"尽快消失）
-        try:
-            _wr = self.set_material(nm, density=(float(_d) if _d else None))
-        except Exception as _e_w:
-            _wr = {"ok": False, "error": repr(_e_w)}
-        if _wr.get("ok"):
-            out.update(_wr)
-            out["method"] = "custom_registry(%s)" % (_wr.get("method") or "?")
-            out["custom_material"] = True
-            out["density_kg_m3"] = _wr.get("density_kg_m3") or _d
-            out["applied_name"] = _wr.get("applied_name") or nm
-            out["canonical"] = _canon
-            return out
-        # ③ 名字写不进 SW → 如实失败，但把【已完成的登记】和【真实原因】交出去
-        # ── 【F-05 · 类型库核查结论】SolidWorks 没有"直接写密度"的 API ──────
-        # 核查（本机类型库 83A33D31-…x0x33x0.py）：
-        #   · IPartDoc.SetMaterialPropertyName2(ConfigName, Database, Name) —— 3 参
-        #     只能按【材质库里的材料名】写，没有密度参数（L47899）；
-        #   · IPartDoc.MaterialPropertyValues 是【外观颜色】9 元组，不是密度
-        #     （L47917，可写但语义是可视属性）；
-        #   · IMassProperty.Density / IMassProperty2.Density 都是【只读】
-        #     （L30525 / L30591 只出现在 _prop_map_get_，_prop_map_put_ 里
-        #      没有任何 Density 条目）；
-        #   · IMassProperty.SetOverrideMassValue 覆盖的是【质量】而非密度
-        #     （L30650），用它假造密度会让质心/惯量一起错，不可接受。
-        # ⇒ 密度只能【跟随材料身份】进入 SW。所以本方法不谎称"写了密度"：
-        #   · 登记成功 + 命名失败 → ok=False，但明确告知"牌号已登记、可审计"；
-        #   · 同时把牌号表密度原样带出（density_kg_m3），供 physics / 凭据使用。
-        out["ok"] = False
-        out["custom_material"] = True
-        out["canonical"] = _canon
-        out["applied_name"] = nm
-        out["density_kg_m3"] = _d
-        out["density_source"] = "COMMON_MATERIALS/牌号表（未写入 SW）"
-        out["sw_internal_material"] = None
-        out["sw_internal_matches_request"] = None
-        out["error"] = (
-            "SW 材质库无法按名写入 %r（%s）。\n"
-            "【已完成的处置】已把该牌号登记进 custom_materials.json"
-            "（E=%s / σy=%s / σb=%s / ρ=%s），材料身份可审计、可复用；"
-            "但 .sldprt 内部的密度/材质仍是 SW 库里的默认值。\n"
-            "【为什么不能只写密度】SolidWorks 没有「直接设置密度」的 API"
-            "（类型库：IMassProperty2.Density 只读，无 put；"
-            "IPartDoc.SetMaterialPropertyName2 无密度参数）—— "
-            "密度只能跟随材料身份进入 SW。"
-            % (nm, (_wr.get("error") or "SW 库无此牌号"),
-               _e, _y, _u, _d))
-        out["hint"] = _gb_material_advice(nm)
-        return out
 
     def _warn(self, msg):
         """记录一条非致命告警（不抛异常，不影响建模流程）。
@@ -5143,7 +4534,7 @@ class SWModel:
 
     @property
     def path(self):
-        return self.model.GetPathName or ""
+        return _com_get_soft(self.model, "GetPathName", default="") or ""
 
     def save(self, path=None):
         """另存为；不传 path 则覆盖保存当前文档。
@@ -5185,16 +4576,13 @@ class SWModel:
             except Exception:
                 return None
 
-        target = self.path if path is None else path
-        # ── 【BUG-05/08 修复】保存前最后一道材质兜底 ────────────────────
-        # 若因任何原因（建模路径未触发特征钩子、手工 from_active 等）
-        # 材质仍未赋成功，则在此强制补一次。补不上就在返回值里显式告警，
-        # 绝不让"密度=1000(水)"的零件静默保存出去。
+        source_path = self.path
+        target = source_path if path is None else path
+        # 仅提交尚未执行的明确赋材请求；保存不触发无名赋材或重复失败尝试。
         _mat_warn = None
         try:
-            if self._pending_material or not (
-                    self.material_result and self.material_result.get("ok")):
-                _r = self._try_apply_pending_material(force=True)
+            if self._pending_material:
+                _r = self._try_apply_pending_material()
                 if _r is None and self._pending_material:
                     _mat_warn = ("零件已有实体但材质仍未写入：%s"
                                  % self._pending_material)
@@ -5269,7 +4657,7 @@ class SWModel:
         # ══ 【三大防线 · 防线①材料】落盘【材料凭据】════════════════════
         # 【Bug-01 修复】凭据写入抽为 _emit_material_attestation()，与 save_as() 共用，
         #   保证"最终落盘路径旁必有凭据"。
-        self._emit_material_attestation(target, _out)
+        self._emit_material_attestation(target, _out, source_path=source_path)
         # ── 【Bug⑪ 修复】同一落盘路径旁写【origin 约定】记录 ───────────────
         # 与材料凭据同目录、同命名基（<part>.origin.json），装配侧可直接读。
         _attach_origin_record(self, target, _out)
@@ -5315,7 +4703,7 @@ class SWModel:
             self._warn(out["warning"])
         return out
 
-    def _emit_material_attestation(self, target, out):
+    def _emit_material_attestation(self, target, out, source_path=None):
         """【三大防线 · 防线①材料】落盘【材料凭据】<part>.material.json。
 
         ── 【Bug-01 修复】抽成独立方法，供 save() 与 save_as() 共用 ────────
@@ -5349,6 +4737,43 @@ class SWModel:
         _mr = self.material_result if isinstance(self.material_result, dict) else {}
         try:
             import defense_gate as _dg
+            # 重新包装已保存文档时恢复原请求，并观察当前材料；绝不自动重赋。
+            if not _mr and source_path and getattr(self, "_material_source", None) != "unspecified":
+                _previous = {}
+                _previous_file = _dg.attestation_path(source_path)
+                if os.path.isfile(_previous_file):
+                    with open(_previous_file, encoding="utf-8") as _f:
+                        _previous = json.load(_f)
+                _observed = self.get_material()
+                _actual = _observed.get("name")
+                _requested = (_previous.get("requested_material")
+                              or _previous.get("attested_material") or _actual)
+                if _requested or _previous.get("material_invalid"):
+                    _matches = bool(_actual and _material_names_match(_actual, _requested))
+                    self._requested_material = _requested
+                    self._material_source = "saved_document_readback"
+                    _mr = {"ok": bool(_observed.get("ok") and _matches),
+                           "method": "saved_document_readback", "material": _requested,
+                           "applied_name": _actual, "sw_internal_material": _actual,
+                           "sw_internal_matches_request": _matches,
+                           "density_kg_m3": _observed.get("density_kg_m3")}
+                    self.material_result = _mr
+                    out["material"] = _mr
+                    out["applied_material"] = _actual
+                    out["material_source"] = self._material_source
+            if not (_mr or getattr(self, "_requested_material", None)
+                    or getattr(self, "_pending_material", None)):
+                _dg.write_material_attestation(target, {
+                    "ok": None, "material_status": "unspecified",
+                    "requested_material": None, "signed": False,
+                    "save_ok": bool(out.get("ok")),
+                })
+                out["material_attestation"] = {
+                    "file": _dg.attestation_path(target), "ok": None,
+                    "material_status": "unspecified", "signed": False,
+                    "note": "未指定材料；仅保存几何，未验证质量或强度。",
+                }
+                return out
             # ══ 【Bug16 修复·严重】非法材料【禁止】走验签流程 ═══════════════
             # 测试部实测：new_part(material="INVALID_MAT") 只报 WARN，却照常
             #   保存并写出带 _sig/_kid 的凭据 —— 任何乱写的材料名都能"通过"
@@ -5421,8 +4846,7 @@ class SWModel:
                 try:
                     _sw_int_ok = bool(
                         _sw_internal_mat and _orig_name
-                        and str(_sw_internal_mat).strip().casefold()
-                            == str(_orig_name).strip().casefold())
+                        and _material_names_match(_sw_internal_mat, _orig_name))
                 except Exception:
                     _sw_int_ok = None
             _sw_int_warn = _mr.get("warning") if _sw_int_ok is False else None
@@ -5547,8 +4971,7 @@ class SWModel:
                     _att_info["cross_standard_note"] = _final_note
                     _att_info["approximate_match"] = True
                     self._warn("跨标准材料替代（凭据层强制检测）：%s" % _final_note)
-                elif _is_equivalent_naming(_att_info.get("requested_material"),
-                                           _ap_for_cross):
+                elif _material_names_match(_att_info.get("requested_material"), _ap_for_cross):
                     _att_info["equivalent_naming"] = True
                 # == [A-86 补充] "名字对不上但没被判跨标准"也必须留痕 ========
                 # 裸牌号（灰铸铁(SN) / DIN 1.2312）在 _material_standard_of
@@ -5558,8 +4981,8 @@ class SWModel:
                 #   必须显式标记出来交给防线①。
                 elif (_ap_for_cross
                       and str(_att_info.get("requested_material") or "").strip()
-                      and (str(_att_info.get("requested_material")).strip().casefold()
-                           != str(_ap_for_cross).strip().casefold())):
+                      and not _material_names_match(_att_info.get("requested_material"),
+                                                    _ap_for_cross)):
                     _att_info["name_substituted"] = True
                     _att_info["name_substituted_note"] = (
                         "请求材质 %r 与 SW 实际生效材质 %r 名称不一致"
@@ -5729,7 +5152,7 @@ class SWModel:
                 try:
                     _want = str(_orig_name or "").strip()
                     _got = str(_mr.get("applied_name") or _mr.get("material") or "").strip()
-                    if _want and _got and _want.lower() != _got.lower():
+                    if _want and _got and not _material_names_match(_want, _got):
                         self._warn(
                             "材料被近似替换：请求 '%s'，SW 实际生效 '%s'"
                             "（密度 %s）。若二者属性不同（如 PETG 1270 vs PET 1420），"
@@ -5794,13 +5217,8 @@ class SWModel:
           原实现从不设置材料 → SW 用默认密度(≈1000 kg/m³ 水) →
           质量/重心/转动惯量全错，工程图材料栏空白，强度校核不可信。
 
-        实现策略（三级兜底，任一成功即可）：
-          第1级 · AddMaterial(name, db) —— 标准路径，从 .sldmat 材质库添加。
-                  材质库路径通过 find_material_db() 【跨盘符】搜索得到
-                  （SW 可能装在 Z 盘，绝不能写死 C 盘）。
-          第2级 · 用已知密度表 COMMON_MATERIALS / 显式 density 参数，
-                  通过 SetMaterialPropertyName2 直接写入密度属性。
-          第3级 · 仅记录告警，返回失败原因，绝不静默吞掉。
+        从 SW 报告的材质库与已登记别名中查找，写入后独立读取名称和密度。
+        无法确认同一材料时明确失败；不重复执行相同写入，也不改用其它牌号。
 
         Args:
             name:     材料名（如 "40Cr" / "Q235" / "6061-T6"）
@@ -5812,7 +5230,14 @@ class SWModel:
         """
         result = {"ok": False, "material": name, "method": None,
                   "database": None, "database_name": None, "warnings": [],
-                  "error_code": None}
+                  "error_code": "MATERIAL_UNVERIFIED", "retryable": False,
+                  "requires_user_action": True}
+        if name != getattr(self, "_requested_material", None):
+            self._material_source = "explicit(set_material)"
+        self._requested_material = name
+        self._pending_material = None
+        self._pending_density = None
+        self.material_result = result
         if not name:
             result["error"] = "材料名为空"
             return result
@@ -5860,8 +5285,9 @@ class SWModel:
 
         # ── 2. 取实体（IBody2）──────────────────────────────────────────
         body = None
+        part = self._part_doc
         try:
-            _b = self.model.GetBodies2(0, False)   # 0 = swSolidBody
+            _b = part.GetBodies2(0, False)   # 0 = swSolidBody
             if _b:
                 body = _b[0] if hasattr(_b, "__getitem__") else _b
         except Exception as e:
@@ -5969,7 +5395,7 @@ class SWModel:
                         # 【R11 修复】SetMaterialPropertyName2 是【方法】（类型库
                         #   IPartDoc L47898，3 参：ConfigName/Database/Name），
                         #   显式加括号，不再靠 getattr 猜。
-                        _com_get(self.model, "SetMaterialPropertyName2",
+                        _com_get(part, "SetMaterialPropertyName2",
                                  "", dbn, real)
                         time.sleep(0.18)
                         d_after = dens_now()
@@ -5978,7 +5404,7 @@ class SWModel:
                         # _prop_map_get_），**绝不能加括号** —— 旧代码用
                         # getattr(...) or "" 取值，语法上没错，但没有类型库
                         # 依据；这里改用 _com_get 显式声明"它是属性"。
-                        mid = _com_get_soft(self.model, "MaterialIdName",
+                        mid = _com_get_soft(part, "MaterialIdName",
                                             default="") or ""
                         _dchg = bool(d_before and d_after
                                      and abs(d_after - d_before) > 1)
@@ -6033,7 +5459,7 @@ class SWModel:
                         # 又是"图纸写国标、零件是别的材料"。这正是 33/35 件
                         # sw_internal_matches_request=false 的成因。
                         _rb_match = _material_names_match(_rb_name, name)
-                        if _rb_name and not _rb_match:
+                        if not _rb_match:
                             tried.append(
                                 "候选 %r 读回校验失败：请求 %r，SW 内部实际是 %r —— "
                                 "写入未生效或被静默替换"
@@ -6090,6 +5516,8 @@ class SWModel:
                             result["material_mismatch_rejected"] = False
                             result.update({
                                 "ok": True,
+                                "requires_user_action": False,
+                                "error_code": None,
                                 "method": "PartDoc.SetMaterialPropertyName2",
                                 "applied_name": real,
                                 "database_name": dbn,
@@ -6161,32 +5589,6 @@ class SWModel:
                         tried.append("SetMaterialPropertyName2('',%r,%r) -> %r"
                                      % (dbn, real, e))
 
-                    # ── 回退路径：实体级 SetMaterialProperty（部分版本可用）──
-                    try:
-                        rc = body.SetMaterialProperty(cfg, dbn, real)
-                        if rc == 0:
-                            try:
-                                self.model.ForceRebuild3(False)
-                            except Exception:
-                                pass
-                            time.sleep(0.15)
-                            d_after = dens_now()
-                            result.update({
-                                "ok": True,
-                                "method": "IBody2.SetMaterialProperty",
-                                "applied_name": real, "database_name": dbn,
-                                "density_after_kg_m3": d_after,
-                                "error_code": 0,
-                            })
-                            result["density_kg_m3"] = d_after
-                            result["density_changed"] = bool(
-                                d_before and d_after and abs(d_after - d_before) > 1)
-                            return result
-                        result["error_code"] = rc
-                    except Exception as e:
-                        tried.append("SetMaterialProperty(%r,%r,%r) -> EXC %r"
-                                     % (cfg, dbn, real, e))
-
         # ── 6. 全部失败：给出可执行的诊断（绝不静默）─────────────────────
         result["warnings"] = tried
         _rej = result.get("rejected_candidates") or []
@@ -6221,11 +5623,6 @@ class SWModel:
             result["material_mismatch_rejected"] = True
             result["rejected_cross_standard"] = bool(_xstd)
             result["rejected_readback_mismatch"] = bool(_rbm)
-            # 注意：这里【不提前 return】—— 下面还有 Bug15 的"自定义材料降级"
-            #   路径（写自定义材质名 + 密度），它是国标牌号的正规出路之一。
-            #   若它成功，会把 ok 置 True 并 pop 掉 error；若也失败，
-            #   上面这段可读的 error/hint 就是最终答复。
-            self._warn("set_material: " + result["error"])
         elif _rej:
             # ── 【BUG-05 二次修复】把"因材质不符被拒"的原因讲清楚 ─────────
             # 这是最容易被误读成"工具坏了"的情形：库里确实有名字相近的材料，
@@ -6264,82 +5661,6 @@ class SWModel:
                 % (name, len(tried), cfg, db_names[:3]))
             result["hint"] = ("SW 材质名必须与 .sldmat 中的 <material name=...> 完全一致；"
                               "中文库常用名：普通碳钢/合金钢/灰铸铁/1023 碳钢板 (SS)")
-        # ══ 【Bug15 修复】SW 库里没有的打印材料 → 自定义材料降级 ═════════
-        # 实测：PLA 在内置表里存在（密度 1240 / E 3500 / σy 55），
-        #   但 SolidWorks 官方材质库【不含 PLA】这类 FDM 打印材料，
-        #   于是 16 种 (库×名) 组合全部失败 → new_part(material="PLA")
-        #   赋材失败、density=None，PLA 零件走不了材料防线（测试部 Bug15）。
-        # 修复：所有候选都失败时，若内置表/自定义库【确有该材料定义】，
-        #   则写入【自定义材料名 + 密度】，让零件拿到正确密度与力学参数。
-        #   密度正确 → 质量/强度/寿命校核可信，比"赋材失败"安全得多。
-        try:
-            _ok_m, _info_m, _why_m = is_valid_material(name)
-            _d_def = want_density or (_info_m or {}).get("density")
-            if _ok_m and _d_def:
-                _wrote = False
-                for _dbn in db_names:
-                    for _nm_try in (str(name),
-                                    (_info_m or {}).get("canonical") or str(name)):
-                        try:
-                            # 【R11 修复】方法，显式加括号（IPartDoc L47898）
-                            _com_get(self.model, "SetMaterialPropertyName2",
-                                     "", _dbn, _nm_try)
-                            time.sleep(0.15)
-                            _d_now = dens_now()
-                            # ══ 【R9 修复】自定义材料降级同样必须【读回校验】══
-                            # 这条是国标牌号的正规出路，如果它也不回读就判成功，
-                            # 等于把"33/35 件凭据与实物脱节"换个地方重演一遍。
-                            _rb2 = _read_back_material(self)
-                            _rb2_name = str(_rb2.get("name") or "").strip()
-                            # 判据：回读 == 请求名（sw_internal_matches_request
-                            #   的字面语义）**或** == 本次写入用的规范名
-                            #   （custom 库常把 Q235 规范化成 "Q235（碳素结构钢）"，
-                            #    那仍是同一材料，不该误判）。两者都不等 → 拒绝。
-                            _rb2_ok = (_material_names_match(_rb2_name, name)
-                                       or _material_names_match(_rb2_name, _nm_try))
-                            if _rb2_name and not _rb2_ok:
-                                tried.append(
-                                    "custom-fallback %s/%s 读回不符：请求 %r，"
-                                    "SW 实际 %r"
-                                    % (_dbn, _nm_try, name, _rb2_name))
-                                continue
-                            if _d_now and abs(float(_d_now) - float(_d_def)) / float(_d_def) <= 0.25:
-                                result.update({
-                                    "ok": True,
-                                    "method": "SetMaterialPropertyName2(custom-fallback)",
-                                    "applied_name": _nm_try,
-                                    "database_name": _dbn,
-                                    "density_kg_m3": float(_d_now),
-                                    "match_level": "custom",
-                                    "custom_material": True,
-                                    "readback_material": _rb2_name or None,
-                                    "sw_internal_matches_request": bool(_rb2_ok)
-                                    if _rb2_name else None,
-                                })
-                                result.pop("error", None)
-                                result.pop("hint", None)
-                                result["warnings"].append(
-                                    "SolidWorks 材质库无 %r，已按内置定义写入自定义材料"
-                                    "（密度 %.0f kg/m³）—— 材料身份与力学参数仍可追溯"
-                                    % (name, float(_d_now)))
-                                try:
-                                    self.model.ForceRebuild3(False)
-                                except Exception:
-                                    pass
-                                _wrote = True
-                                break
-                        except Exception as _e_cf:
-                            tried.append("custom-fallback %s/%s: %r"
-                                         % (_dbn, _nm_try, _e_cf))
-                    if _wrote:
-                        break
-                if _wrote:
-                    return result
-                result["hint"] = (result.get("hint") or "") + (
-                    "  【Bug15】该材料在 SW 库中不存在，且自定义写入也失败；"
-                    "可先用 save_custom_material() 登记，或在 SW 中手工新建该材料。")
-        except Exception as _e_b15:
-            tried.append("Bug15 自定义降级异常: %r" % (_e_b15,))
         self._warn("set_material: " + result["error"])
         return result
 
@@ -6393,7 +5714,7 @@ class SWModel:
         """
         nm = str(name or "").strip()
         if not nm:
-            return {"ok": False, "error": "材料名不能为空"}
+            return self.set_material(nm)
         # ① 属性解析：显式参数 > 内置表/自定义库
         props = resolve_material_props(nm) or {}
         _e = e_mpa if e_mpa is not None else props.get("e_mpa")
@@ -6436,7 +5757,7 @@ class SWModel:
             _sw_internal = (sw_write or {}).get("applied_name")
         if not _sw_internal:
             try:
-                _sw_internal = self.model.GetMaterialPropertyName2("", "")
+                _sw_internal = _read_back_material(self).get("name")
             except Exception:
                 _sw_internal = None
         _req_n = str(nm).strip()
@@ -6495,20 +5816,19 @@ class SWModel:
             self._warn(_detail)
         else:
             result["warning"] = None
+        result["error_code"] = None if result["ok"] else "MATERIAL_UNVERIFIED"
+        result["retryable"] = False
+        result["requires_user_action"] = not result["ok"]
+        if not result["ok"]:
+            result["error"] = result["warning"]
+            result["next_action"] = _gb_material_advice(nm)
         # 让 physics 与出图能拿到"实际应用的材料"
         self.material_result = dict(result)
         return result
 
     def get_material(self):
         """读取当前零件材料名与密度（用于验收：确认不再是默认水密度）。"""
-        out = {"ok": False, "name": None, "density_kg_m3": None}
-        try:
-            out["name"] = self.model.GetMaterialPropertyName2("", "")
-        except Exception:
-            try:
-                out["name"] = self.model.MaterialIdName
-            except Exception:
-                pass
+        out = dict(_read_back_material(self), ok=False, density_kg_m3=None)
         try:
             mp = self.massprops()
             if mp.get("ok"):
@@ -14525,6 +13845,9 @@ class SWModel:
         }
         _fmt = _EXT_FMT.get(str(path).lower()[-6:] if str(path).lower().endswith((".sldprt",".sldasm",".slddrw")) else os.path.splitext(path)[1].lower(), 0)
 
+        source_path = self.path
+        if self._pending_material:
+            self._try_apply_pending_material()
         before = _fp(path)
         ret = None
         errs = None
@@ -14597,7 +13920,7 @@ class SWModel:
         except Exception:
             pass
         try:
-            self._emit_material_attestation(path, _out)
+            self._emit_material_attestation(path, _out, source_path=source_path)
         except Exception as _e_att:
             _out["material_attestation"] = {"ok": False, "error": repr(_e_att)}
             try:

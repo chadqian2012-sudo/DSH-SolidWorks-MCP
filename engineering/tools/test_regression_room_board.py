@@ -188,6 +188,19 @@ check("③ safe_to_restart=True（平台已确认不在运行）",
 check("③ 产物/报告证据为空",
       row.get("artifact_newest") is None and row.get("report_age_sec") is None, row)
 
+old_report = time.time() - 86400
+report_path = mg._report_path(ROOM_C)
+os.makedirs(os.path.dirname(report_path), exist_ok=True)
+write_json(report_path, {"room": ROOM_C, "latest": {"stage": "failed", "ts": old_report,
+           "requires_user_action": True, "retryable": False}})
+os.utime(report_path, (old_report, old_report))
+status = mg.cmd_room_status()
+waiting = only(status, ROOM_C)
+check("等待用户的房间过期也不可重启，room-status 与看板一致",
+      waiting["state"] == "waiting_user" and waiting["safe_to_restart"] is False
+      and waiting["restart_block_reason"] == only(mg.cmd_room_board(), ROOM_C)["restart_block_reason"]
+      and not status["safe_to_restart"] and ROOM_C not in status["restartable_rooms"], waiting)
+
 print("\n=== ④ 契约自检：board JSON 字段齐全 ===")
 board = mg.cmd_room_board()
 for _k in ("ok", "generated_at", "rooms", "sw_lock", "summary", "hint"):

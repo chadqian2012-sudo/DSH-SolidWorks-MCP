@@ -530,8 +530,8 @@ check("★ 新增 _gb_material_advice（缺国标牌号的可操作路径）",
       callable(getattr(swapi, "_gb_material_advice", None)))
 
 _adv = swapi._gb_material_advice("Q235")
-check("★ 建议里明确「SW 官方库不收录 GB 牌号」",
-      "不收录" in _adv, _adv[:300])
+check("★ 建议明确停止自动重试且不把Python登记当作SW赋材",
+      "不要自动重建或重复赋材" in _adv and "不会创建 SW 材质" in _adv, _adv)
 check("★ 建议里给出 set_custom_material 这条可执行路径",
       "set_custom_material" in _adv, _adv[:400])
 check("★ 建议里给出自定义 .sldmat / Custom Materials 这条路径",
@@ -574,6 +574,148 @@ check("★ 失败时 material_mismatch_rejected=True（供材料防线拦截）"
 check("★ 失败时同时标记 rejected_readback_mismatch",
       _res.get("rejected_readback_mismatch") is True,
       _res.get("rejected_readback_mismatch"))
+
+# ══════════════════════════════════════════════════════════════════════
+sec("J. 别名、输出参数与失败停点")
+from unittest.mock import patch
+import tempfile
+import json
+from pathlib import Path
+import defense_gate
+
+class _TupleReadbackDoc(FakeMaterialDoc):
+    def GetMaterialPropertyName2(self, cfg, database):
+        self.calls.append((cfg, database))
+        return self._actual, "SolidWorks Materials"
+
+_tuple_doc = _TupleReadbackDoc(actual="普通碳钢")
+_tuple_doc.ConfigurationManager.ActiveConfiguration.Name = "默认"
+_tuple_model = make_swmodel(_tuple_doc)
+_read = swapi._read_back_material(_tuple_model)
+check("generated dispatch 的(name,database)分别读取",
+      _read.get("name") == "普通碳钢" and _read.get("database") == "SolidWorks Materials", _read)
+check("getter 使用活动配置名", _tuple_doc.calls[-1][0] == "默认", _tuple_doc.calls)
+check("get_material 与独立读回共用同一名称读取",
+      _tuple_model.get_material().get("name") == "普通碳钢")
+
+class _ByrefReadbackDoc(FakeMaterialDoc):
+    def GetMaterialPropertyName2(self, cfg, database):
+        database.value = "Custom Materials"
+        return "Q235"
+
+with patch.object(swapi.win32com.client, "VARIANT", side_effect=lambda *args: types.SimpleNamespace(value="")):
+    _read = swapi._read_back_material(make_swmodel(_ByrefReadbackDoc()))
+check("动态COM的BSTR输出参数保留材质库名",
+      _read.get("name") == "Q235" and _read.get("database") == "Custom Materials", _read)
+check("已登记的中英文命名别名按同一canonical识别",
+      swapi._material_names_match("SolidWorks Materials|普通碳钢", "PlainCarbonSteel") is True)
+check("命名别名仍不接受跨标准替代",
+      not swapi._material_names_match("AISI 1020", "Q235")
+      and not swapi._material_names_match("S235JR", "Q235"))
+
+class _ChineseAliasDoc(FakeMaterialDoc):
+    def SetMaterialPropertyName2(self, cfg, database, name):
+        self.write_calls.append((cfg, database, name))
+        self._actual = "普通碳钢"
+
+with patch.object(swapi, "_resolve_material_names", return_value=[("普通碳钢", "exact")]), \
+     patch.object(swapi.time, "sleep"):
+    _alias_model = make_swmodel(_ChineseAliasDoc())
+    _alias_result = _alias_model.set_material("PlainCarbonSteel")
+check("明确PlainCarbonSteel、读回普通碳钢可以成功",
+      _alias_result.get("ok") is True and _alias_result.get("sw_internal_matches_request") is True,
+      _alias_result)
+
+with tempfile.TemporaryDirectory(prefix="sw_alias_attestation_") as _td, \
+     patch.object(defense_gate, "request_signed_credential",
+                  side_effect=lambda spec: {"ok": True, "credential": dict(spec, _sig="offline-fixture")}):
+    _alias_path = os.path.join(_td, "alias.SLDPRT")
+    Path(_alias_path).write_bytes(b"offline alias geometry" * 256)
+    _warning_count = len(_alias_model.warnings)
+    _alias_model._emit_material_attestation(_alias_path, {"ok": True})
+    check("已确认的别名在签发凭据时不再误报替换警告",
+          len(_alias_model.warnings) == _warning_count, _alias_model.warnings)
+
+check("同一库和分类下不同牌号不能因公共目录判同材",
+      not swapi._material_names_match("SW|Steel|Q355", "SW|Steel|Q235")
+      and not swapi._material_names_match("foo|bar|one", "foo|bar|two"))
+
+_part = FakeMaterialDoc()
+_strict_model = types.SimpleNamespace(_oleobj_=object(),
+    ConfigurationManager=_part.ConfigurationManager,
+    GetMassProperties=_part.GetMassProperties, ForceRebuild3=_part.ForceRebuild3)
+_part_constructor = lambda raw: _part
+with patch.object(swapi, "get_early_module", return_value=types.SimpleNamespace(IPartDoc=_part_constructor)) as _interface, \
+     patch.object(swapi, "_resolve_material_names", side_effect=lambda db, name, **kw: [(name, "exact")]), \
+     patch.object(swapi.time, "sleep"):
+    _strict = make_swmodel(_strict_model)
+    check("只有IModelDoc2成员的对象经IPartDoc读取实体", _strict._has_solid_body())
+    _strict_result = _strict.set_material("Q235")
+    check("早绑定模型通过IPartDoc赋材与读回",
+          _strict_result.get("ok") is True and bool(_interface.call_args_list),
+          _strict_result)
+
+_late_part = FakeMaterialDoc()
+_late_part._oleobj_ = object()
+with patch.object(swapi, "get_early_module", return_value=None):
+    check("类型库不可用时保留可用晚绑定接口",
+          make_swmodel(_late_part)._part_doc is _late_part)
+
+class _EmptyReadbackDoc(FakeMaterialDoc):
+    def SetMaterialPropertyName2(self, cfg, database, name):
+        self.write_calls.append((cfg, database, name))
+    def GetMaterialPropertyName2(self, cfg, database):
+        return ""
+    @property
+    def MaterialIdName(self):
+        return "旧的材料属性"
+
+_empty_doc = _EmptyReadbackDoc()
+_empty_model = make_swmodel(_empty_doc)
+_empty_model._pending_material = "Q235"
+_empty_model._pending_density = 7850
+with tempfile.TemporaryDirectory(prefix="sw_material_stop_") as _td, \
+     patch.object(swapi, "_resolve_material_names", side_effect=lambda db, name, **kw: [(name, "exact")]), \
+     patch.object(swapi.time, "sleep"), \
+     patch.object(defense_gate, "request_signed_credential", return_value={"ok": False, "error": "offline"}), \
+     patch.object(defense_gate, "note_unsigned_attempt"):
+    _failed = _empty_model._try_apply_pending_material()
+    _write_count = len(_empty_doc.write_calls)
+    check("空独立读回不能借旧密度或旧属性判成功",
+          _failed.get("ok") is False and _failed.get("readback_material") is None, _failed)
+    check("明确赋材失败要求人工处理，禁止自动重试",
+          _failed.get("requires_user_action") is True and _failed.get("retryable") is False)
+    _empty_model._try_apply_pending_material()
+    _save_count = [0]
+    def _save(path, *args):
+        _save_count[0] += 1
+        Path(path).write_bytes(("fixture-%d" % _save_count[0]).encode() * 600)
+        return 0
+    _empty_doc.SaveAs3 = _save
+    _empty_doc.GetPathName = lambda: ""
+    for _i in range(2):
+        _empty_model.save(os.path.join(_td, "failed.SLDPRT"))
+    check("失败后的实体钩子及重复save均不再调用COM赋材",
+          len(_empty_doc.write_calls) == _write_count, _empty_doc.write_calls)
+
+    for _actual, _matches in (("Q235", True), ("AISI 1020", False)):
+        _source = os.path.join(_td, "source.SLDPRT")
+        Path(_source).write_bytes(b"previously saved fixture" * 256)
+        Path(defense_gate.attestation_path(_source)).write_text(
+            json.dumps({"requested_material": "Q235"}), encoding="utf-8")
+        _doc = FakeMaterialDoc(actual=_actual)
+        _doc.GetPathName = lambda: _source
+        _doc.SketchManager = _doc.FeatureManager = _doc.Extension = object()
+        _doc.SaveAs3 = _save
+        _reopened = swapi.from_active(sw=types.SimpleNamespace(ActiveDoc=_doc))
+        _target = os.path.join(_td, "reopened-%s.SLDPRT" % _matches)
+        _reopened.save_as(_target)
+        _att = json.loads(Path(defense_gate.attestation_path(_target)).read_text(encoding="utf-8"))
+        check("重开后另存保留请求并独立核对实际材料：" + _actual,
+              _att.get("requested_material") == "Q235"
+              and _att.get("sw_internal_matches_request") is _matches
+              and _att.get("material_status") != "unspecified" and not _doc.write_calls,
+              _att)
 
 # ══════════════════════════════════════════════════════════════════════
 print("")

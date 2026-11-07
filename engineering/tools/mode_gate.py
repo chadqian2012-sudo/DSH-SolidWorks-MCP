@@ -2603,7 +2603,7 @@ def cmd_wait_rooms(targets, timeout=900.0, interval=10.0, all_active=False):
         time.sleep(max(1.0, min(interval, 60.0)))
 
 
-def _write_report_and_heartbeat(room, stage, detail=""):
+def _write_report_and_heartbeat(room, stage, detail="", **result):
     """写入一条房间进度报告并刷新心跳（room-report 的实际落盘部分）。
 
     【BUG-12 关联】抽出成函数，让"防线未过但仍要如实记录 done"这条路径
@@ -2611,8 +2611,9 @@ def _write_report_and_heartbeat(room, stage, detail=""):
     """
     os.makedirs(REPORTS_DIR, exist_ok=True)
     path = _report_path(room)
-    rec = {"room": room, "stage": stage, "detail": detail,
+    rec = {"room": room, "task_id": _current_workflow_task_id(), "stage": stage, "detail": detail,
            "ts": time.time(), "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    rec.update(result)
     history = []
     try:
         if os.path.exists(path):
@@ -2623,7 +2624,7 @@ def _write_report_and_heartbeat(room, stage, detail=""):
     history.append(rec)
     history = history[-20:]
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"room": room, "latest": rec, "history": history},
+        json.dump({"room": room, "task_id": rec["task_id"], "latest": rec, "history": history},
                   f, ensure_ascii=False, indent=2)
     try:
         hb = _heartbeat_path(room)
@@ -2731,8 +2732,16 @@ def cmd_room_report(room, stage, detail=""):
                     "note": ("本上报仍会写入进度报告（如实记录你说过 done），"
                              "但 room-end 时会再次强制拦截。"),
                 }
-                # 先把 done 写进去（如实记录），再追加缺口提示返回
-                _write_report_and_heartbeat(room, stage, detail)
+                if _dv.get("requires_user_action"):
+                    _hint.update(requires_user_action=True, retryable=False,
+                                 next_action=_dv.get("next_action"),
+                                 how=[_dv.get("next_action")],
+                                 note="材料未验证，记录为失败；等待用户处理，不自动重开房间。")
+                    _write_report_and_heartbeat(room, "failed", detail,
+                                                requires_user_action=True, retryable=False,
+                                                next_action=_dv.get("next_action"))
+                else:
+                    _write_report_and_heartbeat(room, stage, detail)
                 return _hint
         except Exception:
             # 防线模块不可用时不阻断上报（room-end 会 fail-closed 拦截）
@@ -2979,7 +2988,7 @@ def cmd_room_report_read(room=None):
 #   房间明明在 FIFO 队列里正常等锁，主对话看到"没产出/没心跳"就判死重启。
 # 对策：waiting_sw 成为【一等状态】，看板直接给出 safe_to_restart=False
 #   与一句"严禁判死/重启"的理由，主对话不需要自己推理。
-ROOM_BOARD_STATES = ("starting", "running", "waiting_sw", "idle",
+ROOM_BOARD_STATES = ("starting", "running", "waiting_sw", "waiting_user", "idle",
                      "done", "failed", "dead", "unbound", "detached")
 #: 【2026-10-29 G04】detached = 房间绑定的 subagent 已不在平台注册表里
 #:   （最典型：DSH 崩溃重启后，上一轮 fork 的子代理全部消失，但 mode_state
@@ -3083,6 +3092,8 @@ def _board_guidance(board_state, room):
     唯一合法可重启集合：done / failed / dead（平台已确认不在运行）。
     其余一律 False —— 并把"为什么不能动"写成机器可读的理由。
     """
+    if board_state == "waiting_user":
+        return False, "材料无法验证，等待用户处理；自动重开不会改变材料条件", "向用户说明材料失败原因并等待处理"
     if board_state == "done":
         return True, None, "已收尾（ended_at）；无需动作，如需清理由人工 rooms-reset"
     if board_state == "failed":
@@ -3203,8 +3214,11 @@ def _board_entry(name, info, subs, state=None, type_map=None, st=None):
             _detached_reason = ("DSH 已重启（runId %s -> %s），上一轮 fork 的子代理"
                                 "全部不可寻址" % (str(_prev_rid)[:18], str(_cur_rid)[:18]))
 
+    _latest = st.get("latest_report") if isinstance(st.get("latest_report"), dict) else {}
     if info.get("ended_at"):
         board_state = "done"
+    elif _latest.get("requires_user_action"):
+        board_state = "waiting_user"
     elif info.get("failed_at"):
         board_state = "failed"
     elif _detached:
@@ -3239,7 +3253,8 @@ def _board_entry(name, info, subs, state=None, type_map=None, st=None):
     else:
         board_state = "running" if _legacy == "running" else "idle"
     _safe, _block, _next = _board_guidance(board_state, name)
-    _latest = st.get("latest_report") if isinstance(st.get("latest_report"), dict) else {}
+    if board_state == "waiting_user":
+        _next = _latest.get("next_action") or _next
     # ── 【R4 / B-28 修复】进展超时看门狗（详见 BOARD_NO_PROGRESS_SEC_DEFAULT）──
     # "多久没有任何可观察进展"：取【最近一次能证明它在动】的时间差——
     #   进度报告 mtime / 产物 mtime / 刚绑定的 subagent / 刚 room-start，
@@ -3329,6 +3344,8 @@ def _board_entry(name, info, subs, state=None, type_map=None, st=None):
         "sw_queue_pos": _sw_pos,
         "sw_owner": _owner,
         "safe_to_restart": bool(_safe),
+        "requires_user_action": board_state == "waiting_user",
+        "retryable": bool(_safe),
         "restart_block_reason": _block,
         "next_action": _next,
         # ── 【R4】进展看门狗字段（机器可判定，别只看 state）──────────────
@@ -3342,6 +3359,7 @@ def _board_entry(name, info, subs, state=None, type_map=None, st=None):
 ROOM_BOARD_HINT = (
     "room-board 是【唯一权威看板】：状态由代码 + 平台事实推导，禁止靠猜。"
     "state 语义：starting=刚登记在启动宽限内；running=确认在跑；"
+    "waiting_user=材料无法验证，等待用户处理，禁止自动重开；"
     "waiting_sw=在 SW 队列里正常等锁（严禁判死/重启）；"
     "idle=平台确认存活但当前没有可观察动作；done/failed=已收尾；"
     "dead=平台明确 inactive/disposed/missing 且无证据且超宽限（才可重启）；"
@@ -3731,10 +3749,9 @@ def cmd_room_status():
         try:
             _b = _board_entry(name, info, subs, state=state,
                               type_map=_type_map, st=rec)
-            rec["state"] = _b.get("state")
-            rec["next_action"] = _b.get("next_action")
-            rec["subagent_label"] = _b.get("subagent_label")
-            rec["sw_queue_pos"] = _b.get("sw_queue_pos")
+            for key in ("state", "next_action", "subagent_label", "sw_queue_pos",
+                        "safe_to_restart", "restart_block_reason", "requires_user_action", "retryable"):
+                rec[key] = _b[key]
         except Exception:
             rec["state"] = rec.get("status")
             rec["next_action"] = None
@@ -5829,8 +5846,11 @@ def _maybe_advance_workflow_finished(reason="room-end"):
                         "advanced": False,
                         "reason": "三大防线未通过，拒绝自动收尾为 finished",
                         "defense_required": True,
+                        "requires_user_action": bool(_dt2.get("requires_user_action")),
+                        "retryable": False,
+                        "next_action": _dt2.get("next_action"),
                         "blockers": _dt2["blockers"][:24],
-                        "hint": ("先补齐三道防线（材料凭据 / physics-optimize / "
+                        "hint": (_dt2.get("next_action") or "先补齐三道防线（材料凭据 / physics-optimize / "
                                  "physics-validate-domain），再用 room-end 收尾；"
                                  "或设 DSH_DEFENSE_BYPASS=1 显式绕行（会留痕）。"),
                     }
@@ -6542,25 +6562,32 @@ def cmd_room_end(name, force=False, dry_run=False):
                                     % (name, _e_def, name)),
                     }
                 if not _def["ok"]:
+                    if _def.get("requires_user_action") and not dry_run:
+                        _write_report_and_heartbeat(name, "failed", "材料未验证，拒绝收尾",
+                                                    requires_user_action=True, retryable=False,
+                                                    next_action=_def.get("next_action"))
                     _nl = chr(10)
                     _lines = ["=== 三大防线拦截：房间 [" + str(name) + "] 不得下线 ===", ""]
                     for _b in _def["blockers"]:
                         _lines.append("  ✗ " + _b)
-                    _lines += [
+                    _lines += (["", _def.get("next_action")] if _def.get("requires_user_action") else [
                         "",
                         "补齐方式：",
-                        "  ① 材料：每个零件用 swapi.new_part(material='Q235') 显式赋材后重新 save()；",
+                        "  ① 材料：仅按用户指定材料真实赋材并读回；不得擅自换成 Q235；",
                         "  ② 物理：在房间内跑 python sw_bridge.py physics-optimize <load_case.json> --room " + str(name),
                         "  ③ 领域：在房间内跑 python sw_bridge.py physics-validate-domain <domain> --room " + str(name),
                         "",
                         "确需放行（会留痕到 reports/defense_bypass.json）：",
                         "  · python mode_gate.py room-end \"" + str(name) + "\" --force",
                         "  · 或设环境变量 DSH_DEFENSE_BYPASS=1",
-                    ]
+                    ])
                     return {
                         "ok": False,
                         "room": name,
                         "gate": "DEFENSE_REQUIRED",
+                        "requires_user_action": bool(_def.get("requires_user_action")),
+                        "retryable": False,
+                        "next_action": _def.get("next_action"),
                         "room_type": _def.get("room_type"),
                         "blockers": _def["blockers"],
                         "defense": _def["details"],

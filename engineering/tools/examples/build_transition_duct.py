@@ -377,5 +377,5 @@ def main(sw):
 __RESULT__ = main(sw)
 __RESULT__["artifacts"] = [__RESULT__["path"]]
 __RESULT__["geometry_sha256"] = _sha256(__RESULT__["path"])
-if __RESULT__["geometry_sha256"] is None:
-    raise RuntimeError("Cannot read the saved geometry for verification")
+if not sw_surface.saved_duct_geometry_matches(sw, __RESULT__["path"], __RESULT__["geometry_sha256"]):
+    raise RuntimeError("Saved part does not match the expected single lofted sheet")

@@ -1127,6 +1127,93 @@ export function apply(ctx) {
     return false;
   }
 
+  /** A non-retryable tool/room result yields to the user without completing the task. */
+  function waitingForUser(agent) {
+    const events = sessionEvents(agent.session) || [];
+    let userIndex = -1;
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i]?.type === 'user/message' && events[i].data?.source?.kind === 'user') {
+        userIndex = i;
+        break;
+      }
+    }
+    if (userIndex < 0) return false;
+    const userAt = Number(events[userIndex].time);
+    if (!Number.isFinite(userAt)) return false;
+    const toolsDir = findToolsDir();
+    const wf = toolsDir && readJsonSafe(path.join(toolsDir, 'workflow_state.json'));
+    const taskId = String(wf?.task_id || '');
+    const ms = toolsDir && readJsonSafe(path.join(toolsDir, 'mode_state.json'));
+    const rooms = new Set(Object.keys(ms?.rooms || {}).filter((room) => {
+      if (ms.rooms[room]?.task_id !== taskId || !taskId) return false;
+      return !isDelegatedAgent(agent)
+        || ms.subagents?.[room]?.id === (agent.sessionId || agent.id);
+    }));
+    const outcomes = new Map();
+    const observe = (result, at, room = '') => {
+      if (!result || typeof result !== 'object' || !Number.isFinite(at) || at < userAt) return;
+      if (result.task_id && result.task_id !== taskId) return;
+      if (room && !rooms.has(room)) return;
+      if (at < (outcomes.get(room)?.at || 0)) return;
+      outcomes.set(room, { at, waiting: result.requires_user_action === true && result.retryable === false });
+    };
+    if (toolsDir && /^[A-Za-z0-9_-]+$/.test(taskId)) {
+      for (const room of rooms) {
+        // Same filename rule as mode_gate._safe_room_name; only this task's latest report.
+        const safe = room.replace(/[^\p{L}\p{N} _-]/gu, '').trim();
+        const report = readJsonSafe(path.join(toolsDir, 'reports', taskId, safe + '.report.json'));
+        if (report?.room === room && report.latest?.room === room) {
+          observe(report.latest, Number(report.latest.ts) * 1000, room);
+        }
+      }
+    }
+    // RC1 persists tool output in tool/result.data.message.content[].text. pwsh
+    // appends exit markers after stdout, so parse its final complete JSON object.
+    const calls = new Map();
+    for (const event of events.slice(userIndex + 1)) {
+      if (event.type === 'tool/call') {
+        calls.set(event.data?.callId, event.data);
+        continue;
+      }
+      if (event.type !== 'tool/result') continue;
+      const call = calls.get(event.data?.message?.toolCallId);
+      if (!call || call.name !== 'pwsh') continue;
+      let args = call.arguments;
+      if (typeof args === 'string') {
+        try { args = JSON.parse(args); } catch { continue; }
+      }
+      // Observe command execution, never arbitrary read_file output or echoed JSON.
+      const invocations = String(args?.command || '').matchAll(
+        /(?:^|[\r\n;])\s*(?:&\s*)?(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s;]+))\s+(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s;]+))\s+([a-z_-]+)/gi);
+      const commands = { 'sw_bridge.py': ['run'], 'mode_gate.py': ['room-end', 'room-report'],
+        'defense_gate.py': ['check-room', 'check-task'],
+        'workflow_gate.py': ['pre-delivery', 'predelivery', 'confirm-assembly', 'provide_context'] };
+      const owned = [...invocations].some((match) => {
+        const executable = path.basename(match[1] || match[2] || match[3]);
+        const script = path.basename(match[4] || match[5] || match[6]).toLowerCase();
+        return /^(?:python(?:\d+(?:\.\d+)*)?|py)(?:\.exe)?$/i.test(executable)
+          && commands[script]?.includes(match[7].toLowerCase());
+      });
+      if (!owned) continue;
+      const text = (event.data?.message?.content || [])
+        .filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+      const end = text.lastIndexOf('}');
+      for (const match of text.matchAll(/^\s*\{/gm)) {
+        let result;
+        try { result = JSON.parse(text.slice(match.index, end + 1)); } catch { continue; }
+        const latest = result?.latest;
+        if (latest && typeof latest === 'object') {
+          observe(latest, Number(latest.ts) * 1000, String(result.room || latest.room || ''));
+        } else if (typeof result?.requires_user_action === 'boolean'
+                   || Array.isArray(result?.material_defense)) {
+          observe(result, Number(event.time), String(result.room || ''));
+        }
+        break;
+      }
+    }
+    return [...outcomes.values()].some((result) => result.waiting);
+  }
+
   // ── 【模型自动接替】运行时状态（每 agent 一份）────────────────────────
   // 结构：agentId -> { key: 当前钉住的候选 key, tried: Set(本 turn 已试),
   //                    turn: 该 tried 属于哪个 turn }
@@ -1770,6 +1857,10 @@ export function apply(ctx) {
       }
       // 用户明确要求停止 → 放行
       if (userRequestedStop(agent)) {
+        guardState.delete(agent.id);
+        return;
+      }
+      if (waitingForUser(agent)) {
         guardState.delete(agent.id);
         return;
       }

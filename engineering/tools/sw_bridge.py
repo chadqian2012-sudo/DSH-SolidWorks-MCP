@@ -2771,6 +2771,7 @@ def cmd_run(sw, script_path, extra_args, room=None):
             "       '__builtins__': __builtins__, '__package__': None,\n"
             "       '__spec__': None, '__doc__': None,\n"
             "       'sw': sw, 'json': json, 'os': os, 'sys': sys}\n"
+            "_business_failure = None\n"
             "try:\n"
             f"    exec(compile(open({script_abs!r}, encoding='utf-8').read(), {script_abs!r}, 'exec'), _ns)\n"
             "    _ok, _err = True, ''\n"
@@ -2785,11 +2786,14 @@ def cmd_run(sw, script_path, extra_args, room=None):
             "    else:\n"
             "        _ok = False\n"
             "        _err = ('脚本以 SystemExit(%r) 结束 → 判定为业务失败' % (_sc,))\n"
-            "except BaseException:\n"
+            "except BaseException as _e_business:\n"
             "    _ok, _err = False, traceback.format_exc()[-3000:]\n"
+            "    _business_failure = getattr(_e_business, 'result', None)\n"
             "finally:\n"
             "    sys.stdout, sys.stderr = _old_out, _old_err\n"
             "_biz = _ns.get('__RESULT__')\n"
+            "if not _ok and isinstance(_business_failure, dict):\n"
+            "    _biz = _business_failure\n"
             "# 【BUG-57 配套】回显脚本实际看到的 __name__，便于核对 __main__ 分支\n"
             "#   到底成不成立（这是本次静默空跑的根因，必须可见）。\n"
             "_ns_name = _ns.get('__name__')\n"
@@ -3070,7 +3074,12 @@ def cmd_run(sw, script_path, extra_args, room=None):
         if _biz.get("ok") is False:
             # 脚本显式报告失败 → 整体判失败，绝不"静默成功"
             result["ok"] = False
-            result.setdefault("error", _biz.get("error") or "脚本自报失败")
+            result["error"] = _biz.get("error") or result.get("error") or "脚本自报失败"
+            for _key in ("error_code", "requires_user_action", "retryable", "next_action",
+                         "material", "requested_material", "readback_material",
+                         "sw_internal_material"):
+                if _key in _biz:
+                    result[_key] = _biz[_key]
         # == [A-29 修复] 逐件失败也要能顶到顶层 ok ======================
         # 实测（2026-11-01）：某房间建模脚本 9 件【全部失败】，逐件都打印了
         #   异常并按惯例 continue，最后没有写 __RESULT__.ok=False，
@@ -3203,11 +3212,7 @@ def cmd_run(sw, script_path, extra_args, room=None):
                     "也没有在磁盘上留下任何可核对的产物 —— 疑似空跑或"
                     "保存路径写错。建议用 __RESULT__ = {'artifacts': [...]} "
                     "显式声明产物，让 run 能替你核对。")
-    # ══ 【三大防线 · 防线①材料】建模出口强制校验 ═══════════════════════
-    # "AI 到了这一步就必须过"：脚本落盘 .sldprt 的那一刻，材料事实即被
-    #   swapi.save() 固化；此处【当场】读取凭据并校验，不合格直接判本次
-    #   run 失败（ok=False）—— 不让"密度=1000(水)/跨族换材"的零件
-    #   继续流向下游房间，从源头掐断而非等到交付才发现。
+    # 几何建模不要求材料；明确赋材或要求质量/强度的任务仍严格校验。
     try:
         import defense_gate as _dg
         _parts = []
@@ -3224,38 +3229,19 @@ def cmd_run(sw, script_path, extra_args, room=None):
                 if _s.lower().endswith(".sldprt") and os.path.exists(_s) and _s not in _parts:
                     _parts.append(_s)
         if _parts:
+            _requirements = _dg.delivery_requirements(room=room)
+            _material_required = bool(_requirements["material"]
+                                      or (os.environ.get("DSH_PART_MATERIAL") or "").strip())
             _mat_reports = []
             _mat_block = []
             for _p in _parts:
-                # Only the bundled single-part duct can prove material is inapplicable.
-                _geometry_only = False
-                try:
-                    _duct_script = os.path.join(_HERE, "examples", "build_transition_duct.py")
-                    if (room is None and result.get("ok") is True
-                            and os.path.normcase(os.path.realpath(script_abs)) ==
-                            os.path.normcase(os.path.realpath(_duct_script))
-                            and isinstance(_biz2, dict) and _biz2.get("ok") is True
-                            and _biz2.get("mode") in ("create", "resize")
-                            and _biz2.get("path") == _p
-                            and _biz2.get("artifacts") == [_p]
-                            and _art.get("present") == [_p]):
-                        from sw_surface import saved_duct_geometry_matches
-                        _geometry_only = saved_duct_geometry_matches(
-                            sw, _p, _biz2.get("geometry_sha256"))
-                except Exception:
-                    # An unavailable geometry proof must still face the original material check.
-                    _geometry_only = False
-                if _geometry_only:
-                    _mat_reports.append({
-                        "part": os.path.basename(_p), "ok": None, "applicable": False,
-                        "level": "NOT_APPLICABLE", "attestation": None,
-                        "reasons": ["已核对保存文件与单曲面几何；没有实体，材料校验不适用；不代表材料达标。"],
-                    })
-                    continue
-                _mr = _dg.check_material_attestation(_p)
+                _mr = _dg.check_material_attestation(_p, required=_material_required)
+                _evaluated = _mr.get("evaluated") is not False
                 _mat_reports.append({
-                    "part": os.path.basename(_p), "ok": _mr["ok"],
-                    "level": _mr["level"], "reasons": _mr["reasons"],
+                    "part": os.path.basename(_p),
+                    "ok": _mr["ok"] if _evaluated else None,
+                    "applicable": _evaluated, "level": _mr["level"],
+                    "reasons": _mr["reasons"] or [_mr.get("reason")],
                     "attestation": _mr.get("attestation"),
                 })
                 if not _mr["ok"]:
@@ -3265,12 +3251,14 @@ def cmd_run(sw, script_path, extra_args, room=None):
             if _mat_block and not _dg.bypass_requested():
                 result["ok"] = False
                 result["defense_blocked"] = "MATERIAL"
+                result["error_code"] = "MATERIAL_UNVERIFIED"
+                result["retryable"] = False
+                result["requires_user_action"] = True
                 result["error"] = (
-                    "【防线①材料】建模产物未通过材料校验，已阻断本次 run：\n  - "
+                    "几何文件已保存，但材料要求未验证；本次已停止：\n  - "
                     + "\n  - ".join(_mat_block)
-                    + "\n请按提示用 swapi.new_part(material=...) 显式赋材后重新保存。"
-                    + "（确需放行：设 DSH_DEFENSE_BYPASS=1，会留痕到 "
-                      "reports/defense_bypass.json）")
+                    + "\n不要自动重建或重复赋材。请确认准确牌号、提供同牌号材质库，"
+                      "或由用户决定是否只交付几何；现有结果不能用于质量或强度结论。")
             elif _mat_block:
                 _dg.log_bypass("sw_bridge.run.material",
                                "; ".join(_mat_block), by="DSH_DEFENSE_BYPASS")

@@ -1,38 +1,10 @@
 # -*- coding: utf-8 -*-
-"""回归测试：F-05 new_part 默认材料与防线口径打架（GB 牌号写不进 SW 材质库）
-
-★ 锁定的真实事故（两小屋独立复现）：
-  new_part() 默认材料 = "GB/T 700-2006 碳素结构钢"（工况文件里的【标准全名】）
-  → is_valid_material() 判 False → 凭据 material_invalid=true、不签发
-  → 材料防线直接拦下，正常建模路径必然走不通。
-  显式 new_part(material="Q235") 也过不去：SW 官方材质库无 GB 牌号
-  → 近似成普通碳钢 → 读回密度 1000（水）→ 防线正确拦截。
-
-★ 本测试钉死的契约（全部假 COM / 不出网 / 不启动 SW）：
-  ① new_part 默认材料必须是【防线合法牌号】（Q235），不能是 PlainCarbonSteel 等欧美牌号；
-  ② 国标库缺失时必须【显式报错】并给出可执行路径，绝不静默降级；
-  ③ 材质写入走【自定义登记路径】（custom_materials / .sldmat 口径），
-     不依赖 SW 内置库名匹配；
-  ④ 密度【随牌号表带出】（Q235→7850），不是 SW 库近似值（1000/7900）。
-
-依据（写死在断言里，防止有人"顺手改回去"）：
-  【类型库】83A33D31-27C5-11CE-BFD4-00400513BB57x0x33x0.py
-    · IPartDoc.SetMaterialPropertyName2(ConfigName, Database, Name) —— 3 参，
-      **没有密度参数**（L47899）
-    · IPartDoc.MaterialIdName / MaterialPropertyValues —— 属性（L47916/L47917），
-      后者是【外观 9 元组】，不是密度
-    · IPartDoc.GetMaterialPropertyName2(ConfigName, Database) —— 2 参（L47357）
-    · ISldWorks.GetMaterialDatabases() / GetMaterialDatabaseCount()（L59526/L59522）
-    · IMassProperty.Density / IMassProperty2.Density —— **只读**
-      （L30525 / L30591 只在 _prop_map_get_，_prop_map_put_ 无 Density 条目）
-      ⇒ SolidWorks 没有"直接设置密度"的 API，密度只能随材料身份进入。
-
-运行：python test_regression_default_material.py
-退出码：0 = 全部通过；1 = 有失败
-"""
+"""无材几何建模与明确赋材的离线回归；不启动 SolidWorks。"""
 import os
 import sys
 import traceback
+import types
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -41,6 +13,12 @@ try:
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
+
+for _name in ("pythoncom", "win32com", "win32com.client", "win32con"):
+    sys.modules[_name] = types.ModuleType(_name)
+sys.modules["win32com"].client = sys.modules["win32com.client"]
+sys.modules["win32com.client"].VARIANT = lambda *args: None
+sys.modules["pythoncom"].VT_DISPATCH = 9
 
 PASS = 0
 FAIL = 0
@@ -59,69 +37,44 @@ def check(label, cond, detail=""):
 
 
 # ══════════════════════════════════════════════════════════════════════
-def test_default_is_legal_grade(swapi):
-    """契约①：默认材料必须是防线合法牌号，不能是欧美牌号。"""
-    print("\n[1] 默认材料必须是防线合法牌号")
-    _nm = swapi.default_part_material_name()
-    check("★ default_part_material_name() 返回 Q235", _nm == "Q235", _nm)
-    check("★ 默认材料能通过防线校验 is_valid_material",
-          swapi.is_valid_material(_nm)[0] is True, swapi.is_valid_material(_nm))
-    _dm = swapi.default_part_material()
-    check("★ default_part_material() 也返回合法牌号",
-          swapi.is_valid_material(_dm)[0] is True, _dm)
-    # 不能是欧美牌号
-    _FOREIGN = ("PlainCarbonSteel", "AlloySteel4140",
-                "StainlessSteel304", "Aluminum6061")
-    check("★ 默认材料【不是】任何欧美降级牌号",
-          _nm not in _FOREIGN and _dm not in _FOREIGN, (_nm, _dm))
-    # 源码级：降级候选链必须已经被删掉
-    import io
-    _src = io.open(os.path.join(HERE, "swapi.py"), encoding="utf-8").read()
-    _i = _src.find("def default_part_material_name")
-    _j = _src.find("def is_default_material_available")
-    _body = _src[_i:_j] if (_i >= 0 and _j > _i) else ""
-    check("★ 降级候选链 for _cand in (...) 已从函数体移除",
-          "for _cand in" not in _body, _body[:300])
-    check("★ 不再有 for _k in COMMON_MATERIALS: return _k（字典首项兜底）",
-          "for _k in COMMON_MATERIALS" not in _body, _body[:300])
+def test_default_geometry(swapi):
+    """未指定时不采用默认牌号、材料表或历史工况。"""
+    from unittest.mock import patch
+    print("\n[1] 未指定材料时只建几何")
+    with patch.dict(os.environ, {"DSH_PART_MATERIAL": ""}), \
+         patch.object(swapi, "default_part_material_name", side_effect=AssertionError("不得推测默认牌号")):
+        result = swapi.resolve_default_material_or_raise()
+        check("无参解析成功且没有材料、密度", result.get("ok") is True
+              and result.get("material") is None and result.get("density") is None, result)
+        check("无参默认材料为空", swapi.default_part_material() is None)
+        check("只有密度也不伪造材料身份",
+              swapi.resolve_default_material_or_raise(density=7850).get("density") is None)
+    with patch.dict(os.environ, {"DSH_PART_MATERIAL": "6061-T6"}):
+        result = swapi.resolve_default_material_or_raise()
+        check("环境明确指定时保留铝材料", result.get("material") == "6061-T6", result)
+        result = swapi.resolve_default_material_or_raise(material="Q235")
+        check("显式参数优先于环境材料", result.get("material") == "Q235", result)
 
 
-def test_missing_gb_data_raises(swapi):
-    """契约②：国标库缺失 → 显式报错 + 可执行路径，不静默降级。"""
-    print("\n[2] 国标库缺失时必须显式报错（不静默降级）")
-    _saved = dict(swapi.COMMON_MATERIALS)
-    try:
-        swapi.COMMON_MATERIALS.clear()
-        check("★ 库空时 is_default_material_available() 返回 False",
-              swapi.is_default_material_available() is False)
-        check("★ 库空时 default_part_material_name() 返回 None（不是欧美牌号）",
-              swapi.default_part_material_name() is None,
-              swapi.default_part_material_name())
-        _r = swapi.resolve_default_material_or_raise()
-        check("★ 解析器返回 ok=False", _r.get("ok") is False, _r.get("ok"))
-        _err = str(_r.get("error") or "")
-        check("★ 错误里点明默认材料不可用", "Q235" in _err and "不可用" in _err, _err[:200])
-        check("★ 错误里明确禁止静默降级成欧美牌号",
-              "绝不" in _err and "欧美牌号" in _err, _err[:300])
-        check("★ 给出可执行路径①导入 gb_materials.json",
-              "gb_materials.json" in _err, _err[:400])
-        check("★ 给出可执行路径②save_custom_material 登记",
-              "save_custom_material" in _err, _err[:500])
-        check("★ 给出可执行路径③显式指定合法牌号",
-              "new_part(material=" in _err, _err[:600])
-        check("★ 附带国标数据状态（loaded/count）",
-              "loaded=" in _err, _err[-200:])
-    finally:
-        swapi.COMMON_MATERIALS.clear()
-        swapi.COMMON_MATERIALS.update(_saved)
-    check("★ 恢复后 is_default_material_available() 回到 True",
-          swapi.is_default_material_available() is True)
+def test_missing_library_geometry(swapi):
+    """缺材料库不挡几何；明确指定不存在的牌号仍失败。"""
+    from unittest.mock import patch
+    print("\n[2] 缺材料库不阻断未指定材料的建模")
+    with patch.dict(os.environ, {"DSH_PART_MATERIAL": ""}), \
+         patch.object(swapi, "is_valid_material", return_value=(False, None, "材料库缺失")):
+        check("材料库缺失仍允许未指定材料",
+              swapi.resolve_default_material_or_raise().get("ok") is True)
+        result = swapi.resolve_default_material_or_raise(material="Q235")
+        check("明确指定不可用 Q235 仍失败", result.get("ok") is False, result)
+        check("错误保留明确牌号并给出登记路径",
+              "Q235" in result.get("error", "")
+              and "set_custom_material" in result.get("error", ""), result)
 
 
 def test_density_from_grade_table(swapi):
     """契约④：密度随牌号表带出（Q235→7850），不用 SW 近似值。"""
     print("\n[3] 密度随牌号表带出（Q235 → 7850）")
-    _r = swapi.resolve_default_material_or_raise()
+    _r = swapi.resolve_default_material_or_raise(material="Q235")
     check("★ 解析器带出密度", _r.get("density") is not None, _r.get("density"))
     check("★ Q235 → 7850 kg/m³（牌号表值，不是 SW 近似 1000/7900）",
           abs(float(_r.get("density") or 0) - 7850.0) < 1e-6, _r.get("density"))
@@ -162,86 +115,82 @@ def test_invalid_material_rejected(swapi):
     check("★ 跨标准替代仍被判出（未被放宽）", _x is True, _note)
 
 
-def test_load_case_normalisation(swapi):
-    """核心缺陷：工况文件的标准全名必须规整成合法牌号。"""
-    print("\n[5] 工况文件标准全名 → 合法牌号（事故直接根因）")
-    _lc = swapi._material_from_load_case()
-    if _lc is None:
-        check("（跳过：无 gate_load_case.json）", True)
-        return
-    check("★ _material_from_load_case() 返回的是牌号，不是标准文件全名",
-          "GB/T" not in str(_lc), _lc)
-    check("★ 返回值能通过防线校验",
-          swapi.is_valid_material(_lc)[0] is True, _lc)
-    # 直接构造场景：name 是标准全名、id 不在 _ID_TO_NAME 表里
-    import json, tempfile, shutil
-    _td = tempfile.mkdtemp(prefix="dsh_mat_")
-    try:
-        _p = os.path.join(_td, "gate_load_case.json")
-        with open(_p, "w", encoding="utf-8") as f:
-            json.dump({"material": {"id": "Q235",
-                                  "name": "GB/T 700-2006 碳素结构钢"}}, f)
-        _old = swapi.__file__
-        # 直接用内部逻辑验证：标准全名必须被反向查表命中
-        _hit = None
-        for _c, _i in swapi.COMMON_MATERIALS.items():
-            if str((_i or {}).get("name") or "").strip() == "GB/T 700-2006 碳素结构钢":
-                _hit = _c
-                break
-        check("★ 标准全名可通过反向查表映射到牌号 Q235", _hit == "Q235", _hit)
-    finally:
-        shutil.rmtree(_td, ignore_errors=True)
+def test_geometry_save_and_explicit_failure(swapi):
+    """两种保存入口记录未赋材事实；后续明确失败不能伪装成未指定。"""
+    import json
+    import tempfile
+    import types
+    from unittest.mock import patch
+    import defense_gate
+    print("\n[5] 直接新建、保存与明确赋材失败")
+    with tempfile.TemporaryDirectory(prefix="dsh_geometry_material_") as td:
+        def save_file(path, *args):
+            Path(path).write_bytes(b"offline geometry fixture" * 256)
+            return 0
+        doc = types.SimpleNamespace(SketchManager=object(), FeatureManager=object(),
+                                    Extension=object(), SaveAs3=save_file,
+                                    GetBodies2=lambda *args: [object()])
+        app = types.SimpleNamespace(ActiveDoc=None, NewDocument=lambda *args: doc)
+        with patch.dict(os.environ, {"DSH_PART_MATERIAL": ""}), \
+             patch.object(swapi, "_disable_snapping"), \
+             patch.object(swapi, "get_part_template", return_value="offline-template"), \
+             patch.object(swapi.SWModel, "_reset_plane_context"), \
+             patch.object(swapi, "VISUAL_MODE", False):
+            model = swapi.new_part(sw=app)
+        check("new_part() 没有待赋材或伪造成功结果",
+              model._pending_material is None and model.material_result is None)
+        with patch.object(model, "set_material", side_effect=AssertionError("几何保存不得强制赋材")), \
+             patch.object(defense_gate, "request_signed_credential", side_effect=AssertionError("无材不得签名")):
+            for method in (model.save, model.save_as):
+                path = os.path.join(td, method.__name__ + ".SLDPRT")
+                # 同路径曾经失败，也必须由本次无材保存写入新事实。
+                Path(defense_gate.attestation_path(path)).write_text(
+                    json.dumps({"material_invalid": True, "requested_material": "OLD"}), encoding="utf-8")
+                saved = method(path)
+                att = json.loads(Path(defense_gate.attestation_path(path)).read_text(encoding="utf-8"))
+                check(method.__name__ + " 成功且明确未指定、未签名",
+                      saved.get("ok") is True and att.get("material_status") == "unspecified"
+                      and att.get("ok") is None and not att.get("_sig")
+                      and att.get("requested_material") is None, saved)
+                check(method.__name__ + " 仍不能通过明确材料验证",
+                      defense_gate.check_material_attestation(path).get("ok") is False)
+        with patch.object(swapi, "get_sw", side_effect=AssertionError("非法请求不应接触SW")):
+            try:
+                swapi.new_part(material="INVALID_MAT")
+            except RuntimeError:
+                check("非法 new_part 在创建文档前失败", True)
+            else:
+                check("非法 new_part 在创建文档前失败", False)
+        model.material_result = {"ok": True, "material": "Q235"}
+        failed = model.set_material(None)
+        check("新的明确失败覆盖旧成功，不能借用旧结果",
+              failed.get("ok") is False and model.material_result is failed)
+        path = os.path.join(td, "failed.SLDPRT")
+        saved = model.save(path)
+        att = json.loads(Path(defense_gate.attestation_path(path)).read_text(encoding="utf-8"))
+        check("明确赋材失败保存后仍记失败，不变成未指定",
+              att.get("material_invalid") is True and att.get("material_status") != "unspecified", att)
+        check("几何任务也不能放过明确赋材失败",
+              defense_gate.check_material_attestation(path, required=False).get("ok") is False)
 
 
-def test_custom_registry_path(swapi):
-    """契约③：材质写入走自定义登记路径（不依赖 SW 内置库名匹配）。"""
-    print("\n[6] 自定义材质登记路径存在且可调用")
-    check("★ 有 _apply_material_via_custom_registry 方法",
-          callable(getattr(swapi.SWModel, "_apply_material_via_custom_registry", None)))
-    check("★ 有 set_custom_material（登记入口）",
-          callable(getattr(swapi.SWModel, "set_custom_material", None)))
-    check("★ 有 save_custom_material（idempotent 登记实现）",
-          callable(getattr(swapi, "save_custom_material", None)))
-    check("★ 有 load_custom_materials（可审计读回）",
-          callable(getattr(swapi, "load_custom_materials", None)))
-    # 源码级：_try_apply_pending_material 必须接上自定义通道
-    import io
-    _src = io.open(os.path.join(HERE, "swapi.py"), encoding="utf-8").read()
-    _i = _src.find("def _try_apply_pending_material")
-    _j = _src.find("def _apply_material_via_custom_registry")
-    _body = _src[_i:_j] if (_i >= 0 and _j > _i) else ""
-    check("★ _try_apply_pending_material 内置库失败后会走自定义登记路径",
-          "_apply_material_via_custom_registry" in _body, _body[:300])
-    check("★ 保留内置库失败的审计证据 sw_library_attempt",
-          "sw_library_attempt" in _body or "sw_library_attempt" in _src)
-    # 登记路径的实现必须来自牌号表，而不是"猜"
-    _k = _src.find("def _apply_material_via_custom_registry")
-    _k2 = _src.find("def set_material", _k)
-    _creg = _src[_k:_k2] if (_k >= 0 and _k2 > _k) else ""
-    check("★ 登记路径用 resolve_material_props 取属性（单一事实来源）",
-          "resolve_material_props" in _creg, _creg[:300])
-    check("★ 登记路径写 custom_materials.json（save_custom_material）",
-          "save_custom_material" in _creg, _creg[:300])
-
-
-def test_no_density_write_lie(swapi):
-    """类型库事实：SW 没有可写密度的 API —— 代码不得谎称写了密度。"""
-    print("\n[7] 不得谎称「写入密度」（SW 无此 API）")
-    import io
-    _src = io.open(os.path.join(HERE, "swapi.py"), encoding="utf-8").read()
-    check("★ 已移除 force_density 调用（SW 无该能力）",
-          "self.force_density" not in _src)
-    check("★ 已移除 density_forced 虚假成功标记",
-          '"density_forced"' not in _src)
-    _k = _src.find("def _apply_material_via_custom_registry")
-    _k2 = _src.find("def set_material", _k)
-    _creg = _src[_k:_k2] if (_k >= 0 and _k2 > _k) else ""
-    check("★ 命名写入失败时 ok=False（不谎报成功）",
-          "out[\"ok\"] = False" in _creg, _creg[:400])
-    check("★ 错误里如实说明密度未写入 SW",
-          "未写入 SW" in _creg or "仍是 SW 库里的默认值" in _creg, _creg[:600])
-    check("★ 错误里说明为何不能只写密度（类型库依据）",
-          "只读" in _creg or "没有" in _creg, _creg[:700])
+def test_single_material_owner(swapi):
+    """赋材由单一入口完成；登记材料属性不能冒充 SW 写入成功。"""
+    import inspect
+    print("\n[6] 材料写入只走一个入口")
+    body = inspect.getsource(swapi.SWModel._try_apply_pending_material)
+    check("待赋材请求只调用一次 set_material", body.count("self.set_material(") == 1)
+    check("已删除重复自定义登记后再次赋材的通路",
+          not hasattr(swapi.SWModel, "_apply_material_via_custom_registry"))
+    check("显式自定义材料登记入口仍存在",
+          callable(getattr(swapi.SWModel, "set_custom_material", None))
+          and callable(getattr(swapi, "save_custom_material", None)))
+    source = inspect.getsource(swapi.SWModel.set_material)
+    check("已删除重复尝试同一写入的 custom-fallback", "custom-fallback" not in source)
+    check("独立读回缺失或不符都必须拒绝", "if not _rb_match:" in source)
+    source = inspect.getsource(swapi._pick_attested_density)
+    check("凭据实测密度与期望密度保持分别记录",
+          "return _d, _expected, True" in source)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -253,18 +202,15 @@ def main():
                   os.path.normcase(HERE)), swapi.__file__)
         check("★ 新增 is_default_material_available",
               callable(getattr(swapi, "is_default_material_available", None)))
-        check("★ 新增 default_material_unavailable_error",
-              callable(getattr(swapi, "default_material_unavailable_error", None)))
         check("★ 新增 resolve_default_material_or_raise",
               callable(getattr(swapi, "resolve_default_material_or_raise", None)))
 
-        test_default_is_legal_grade(swapi)
-        test_missing_gb_data_raises(swapi)
+        test_default_geometry(swapi)
+        test_missing_library_geometry(swapi)
         test_density_from_grade_table(swapi)
         test_invalid_material_rejected(swapi)
-        test_load_case_normalisation(swapi)
-        test_custom_registry_path(swapi)
-        test_no_density_write_lie(swapi)
+        test_geometry_save_and_explicit_failure(swapi)
+        test_single_material_owner(swapi)
     except Exception:
         global FAIL
         FAIL += 1

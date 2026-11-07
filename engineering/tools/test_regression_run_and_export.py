@@ -637,52 +637,104 @@ check("端到端 C：sys.exit(0) 判为成功",
 
 
 # ══════════════════════════════════════════════════════════════════════
-section("风管纯曲面交付与实体材料检查")
+section("零产物材料失败也能停止自动重试")
 from unittest.mock import patch
-from gate_integrity import _sha256
+
+_offline_import = (
+    "import sys, types\n"
+    "for name in ('pythoncom', 'win32com', 'win32com.client', 'win32con'):\n"
+    "    sys.modules[name] = types.ModuleType(name)\n"
+    "sys.modules['win32com'].client = sys.modules['win32com.client']\n"
+    "import swapi\n")
+
+def _execute_offline_generated_wrapper(argv, **kwargs):
+    wrapper = argv[-1]
+    with open(wrapper, encoding="utf-8") as stream:
+        source = stream.read()
+    source = source.replace("import sw_bridge\n",
+                            "class _OfflineBridge:\n"
+                            "    def get_sw(self): return object()\n"
+                            "sw_bridge = _OfflineBridge()\n")
+    with open(wrapper, "w", encoding="utf-8") as stream:
+        stream.write(source)
+    return _real_subprocess_run(argv, **kwargs)
+
+for _label, _body in (
+        ("new_part非法材料在创建前抛错", "swapi.new_part(material='INVALID_MAT')\n"),
+        ("set_material失败直接作为业务结果", "model = object.__new__(swapi.SWModel)\n"
+         "__RESULT__ = model.set_material(None)\n")):
+    _script = _p("material-stop-%d.py" % len(PASS))
+    with open(_script, "w", encoding="utf-8") as _f:
+        _f.write(_offline_import + _body)
+    with patch.object(sw_bridge.subprocess, "run", side_effect=_execute_offline_generated_wrapper), \
+         patch.object(sw_bridge, "_task_work_dir", return_value=None), \
+         patch.dict(os.environ, {"DSH_PART_MATERIAL": ""}):
+        _failure = sw_bridge.cmd_run(object(), _script, [], room=None)
+    check(_label + "：真实wrapper和父流程保留明确停点",
+          _failure.get("ok") is False
+          and _failure.get("error_code") == "MATERIAL_UNVERIFIED"
+          and _failure.get("retryable") is False
+          and _failure.get("requires_user_action") is True
+          and bool(_failure.get("error")), _failure)
+
+
+section("通用无材几何交付与明确材料检查")
+from unittest.mock import patch
 import swapi
+import defense_gate
 
 _duct_path = _p("duct.SLDPRT")
 _duct_script = os.path.join(TOOLS, "examples", "build_transition_duct.py")
-for _label, _solid, _changed, _expected in (
-        ("保存的单曲面", False, False, True),
-        ("曲面混有实体", True, False, False),
-        ("验模后文件变动", False, True, False)):
+for _label, _script, _required, _environment, _attestation, _expected in (
+        ("任意实体脚本未指定材料", _model_script, False, "", None, True),
+        ("风管脚本同样不要求材料", _duct_script, False, "", None, True),
+        ("无材保存事实不算材料达标", _model_script, False, "",
+         {"material_status": "unspecified", "requested_material": None, "ok": None}, True),
+        ("明确非法材料仍阻断", _model_script, False, "",
+         {"material_invalid": True, "requested_material": "INVALID", "error": "非法牌号"}, False),
+        ("明确材料未签名仍阻断", _model_script, False, "",
+         {"requested_material": "Q235", "ok": False}, False),
+        ("明确质量或强度要求缺材料仍阻断", _model_script, True, "", None, False),
+        ("环境明确指定材料缺凭据仍阻断", _model_script, False, "Q235", None, False)):
     with open(_duct_path, "wb") as _f:
-        _f.write(b"offline duct fixture")
-    _digest = _sha256(_duct_path)
-    if _changed:
-        with open(_duct_path, "wb") as _f:
-            _f.write(b"changed after script validation")
-    _duct_loft = types.SimpleNamespace(GetTypeName2=lambda: "BlendRefSurface")
-    _duct_part = types.SimpleNamespace(
-        GetBodies2=lambda kind, visible: [object()] if kind == 1 or _solid else None,
-        FeatureByName=lambda name: _duct_loft if name == "DSH_Duct_Surface" else None)
-    # IModelDoc2 has neither GetBodies2 nor FeatureByName: the cast is required.
-    _duct_model = types.SimpleNamespace(GetPathName=lambda: _duct_path,
-        GetSaveFlag=lambda: False, GetType=lambda: 1, GetConfigurationCount=lambda: 1)
-    _duct_sw = types.SimpleNamespace(GetOpenDocumentByName=lambda path: _duct_model)
-    _duct_payload = {"ok": True, "error": "", "script_name": "__main__",
-        "script_result": {"ok": True, "mode": "create", "path": _duct_path,
-                          "artifacts": [_duct_path], "geometry_sha256": _digest}}
-
-    def _duct_cast(obj, interface):
-        assert obj is (_duct_loft if interface == "IFeature" else _duct_model)
-        return {"IModelDoc2": _duct_model, "IPartDoc": _duct_part, "IFeature": _duct_loft}[interface]
-
-    with patch.object(sw_bridge.subprocess, "run", return_value=_FakeProc(json.dumps(_duct_payload), "", 0)), \
+        _f.write(b"offline part fixture")
+    _attestation_path = defense_gate.attestation_path(_duct_path)
+    if os.path.exists(_attestation_path):
+        os.remove(_attestation_path)
+    if _attestation is not None:
+        with open(_attestation_path, "w", encoding="utf-8") as _f:
+            json.dump(_attestation, _f)
+    _payload = {"ok": True, "error": "", "script_name": "__main__",
+                "script_result": {"ok": True, "artifacts": [_duct_path]}}
+    with patch.object(sw_bridge.subprocess, "run", return_value=_FakeProc(json.dumps(_payload), "", 0)), \
          patch.object(sw_bridge, "_task_work_dir", return_value=None), \
-         patch.object(sys.modules["win32com.client"], "CastTo", side_effect=_duct_cast, create=True), \
+         patch.object(defense_gate, "delivery_requirements", return_value={"material": _required}), \
          patch.object(swapi, "from_active", side_effect=RuntimeError("offline screenshot disabled")), \
-         patch.dict(os.environ, {"DSH_DEFENSE_BYPASS": ""}):
-        _duct_result = sw_bridge.cmd_run(_duct_sw, _duct_script, [], room=None)
-    _reports = _duct_result.get("material_defense") or []
-    if _expected:
-        _material_correct = bool(_reports) and _reports[0].get("applicable") is False and _reports[0].get("ok") is None
-    else:
-        _material_correct = _duct_result.get("defense_blocked") == "MATERIAL"
-    check("风管 " + _label, _duct_result.get("ok") is _expected and _material_correct
-          and not _duct_result.get("defense_bypassed"), _duct_result.get("error"))
+         patch.dict(os.environ, {"DSH_DEFENSE_BYPASS": "", "DSH_PART_MATERIAL": _environment}):
+        _result = sw_bridge.cmd_run(object(), _script, [], room=None)
+    _reports = _result.get("material_defense") or []
+    _material_correct = (bool(_reports) and _reports[0].get("applicable") is False
+                         and _reports[0].get("ok") is None) if _expected else \
+                        _result.get("defense_blocked") == "MATERIAL"
+    check(_label, _result.get("ok") is _expected and _material_correct
+          and not _result.get("defense_bypassed")
+          and (_expected or (_result.get("retryable") is False
+                             and _result.get("requires_user_action") is True)), _result.get("error"))
+
+import mode_gate
+import workflow_gate
+with patch.object(sw_bridge.subprocess, "run", return_value=_FakeProc(json.dumps(_payload), "", 0)), \
+     patch.object(sw_bridge, "_task_work_dir", return_value=None), \
+     patch.object(sw_bridge, "_room_heartbeat"), \
+     patch.object(defense_gate, "STATE_DIR", _p("no-workflow-state")), \
+     patch.object(mode_gate, "cmd_room_artifact", return_value={"ok": True}), \
+     patch.object(workflow_gate, "check_part_ownership", return_value={"allowed": True}), \
+     patch.object(swapi, "from_active", side_effect=RuntimeError("offline screenshot disabled")), \
+     patch.dict(os.environ, {"DSH_DEFENSE_BYPASS": "", "DSH_PART_MATERIAL": ""}):
+    _room_geometry = sw_bridge.cmd_run(object(), _model_script, [], room="基础建模房")
+check("没有任务时直接run --room仍默认几何",
+      _room_geometry.get("ok") is True and bool(_room_geometry.get("material_defense"))
+      and _room_geometry["material_defense"][0].get("applicable") is False, _room_geometry)
 
 _duct_spec = _p("duct-multiconfig.json")
 with open(_duct_path, "wb") as _f:

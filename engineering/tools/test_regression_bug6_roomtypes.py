@@ -211,6 +211,154 @@ try:
     check("显式 require_physics=True 可强制校核（覆盖自动判定）",
           _r_force["require_physics"] is True and _r_force["ok"] is False,
           _r_force["require_physics"])
+
+    # 几何交付不生成材料/FEA要求；显式材料、物理任务及已有赋材失败仍严格。
+    _part = os.path.join(_tmp, "几何零件.SLDPRT")
+    with open(_part, "wb") as f:
+        f.write(b"geometry fixture")
+    _wf_path = os.path.join(_tmp, "workflow_state.json")
+    _geometry = {"task_id": "geometry", "task": "按图建模并输出工程图",
+                 "context": "尺寸按原图；材料未指定；不需要FEA",
+                 "subagent_config": {"rooms": [["底盘结构件", "structural"]]}}
+    DG._write_json(_wf_path, _geometry)
+    DG._write_json(os.path.join(_tmp, "mode_state.json"), {"rooms": {"底盘结构件": {}}})
+    DG._write_json(os.path.join(_tmp, "artifacts_registry.geometry.json"),
+                   {"底盘结构件": [{"path": _part}]})
+    DG._write_json(_part + ".material.json", {
+        "material_status": "unspecified", "requested_material": None,
+        "signed": False})
+    _r_geometry = DG.check_room_defense("底盘结构件")
+    check("几何任务无材、无FEA仍可收尾", _r_geometry["ok"] is True, _r_geometry)
+    _mat_result = _r_geometry["details"]["material"]["results"][0]
+    check("未赋材明确标记为未验证，不冒充材料通过",
+          _mat_result.get("evaluated") is False
+          and _mat_result.get("level") == "NOT_REQUIRED", _mat_result)
+    check("单独材料检查保持严格默认",
+          DG.check_material_attestation(_part)["ok"] is False)
+    check("几何任务总闸不再额外要求物理PASS",
+          DG.check_task_defense()["ok"] is True)
+
+    # 旧工况和历史台账不可把无材任务重新升级为材料任务。
+    DG._write_json(os.path.join(_tmp, "load_case.json"), {"material": {"id": "Q235"}})
+    _old_part = os.path.join(_tmp, "旧任务零件.SLDPRT")
+    with open(_old_part, "wb") as f:
+        f.write(b"old task")
+    DG._write_json(os.path.join(_tmp, "artifacts_registry.old.json"),
+                   {"底盘结构件": [{"path": _old_part}]})
+    DG._write_json(_old_part + ".material.json", {"material_invalid": True})
+    check("当前任务不混入历史台账或旧工况",
+          DG.check_room_defense("底盘结构件")["ok"] is True)
+
+    DG._write_json(_part + ".material.json", {
+        "requested_material": "INVALID_MAT", "material_invalid": True})
+    check("几何任务里显式赋材失败仍阻断",
+          DG.check_room_defense("底盘结构件")["ok"] is False)
+    DG._write_json(_part + ".material.json", {"material_status": "unspecified"})
+    _material_task = dict(_geometry, task="按图建模，材料Q235")
+    DG._write_json(_wf_path, _material_task)
+    _r_material = DG.check_room_defense("底盘结构件")
+    check("仅指定材料时材料必验，FEA不强推",
+          _r_material["ok"] is False and _r_material["require_physics"] is False,
+          _r_material)
+    check("指定材料不能验证时停止自动重试，并要求用户处理",
+          _r_material.get("requires_user_action") is True
+          and _r_material.get("retryable") is False and _r_material.get("next_action"),
+          _r_material)
+    import importlib.util
+    _mg_spec = importlib.util.spec_from_file_location("mode_gate_material_test", os.path.join(TOOLS, "mode_gate.py"))
+    MG = importlib.util.module_from_spec(_mg_spec)
+    _mg_spec.loader.exec_module(MG)
+    from unittest.mock import patch
+    with patch.object(MG, "REPORTS_DIR", os.path.join(_tmp, "progress")), \
+            patch.object(MG, "HEARTBEAT_DIR", os.path.join(_tmp, "heartbeats")), \
+            patch.object(MG, "STATE_DIR", _tmp), \
+            patch.object(MG, "STATE_PATH", os.path.join(_tmp, "mode_state.json")), \
+            patch.object(MG, "WORKFLOW_STATE_PATH", _wf_path), \
+            patch.object(MG, "_finalize_room", side_effect=AssertionError("材料失败不得收尾房间")), \
+            patch.object(MG, "_visual_gate_for_room", lambda name: {"ok": True}):
+        _reported = MG.cmd_room_report("底盘结构件", "done", "几何已完成")
+        _progress = DG._read_json(MG._report_path("底盘结构件"))
+        _latest = _progress.get("latest") or {}
+        check("材料失败不能把done写成成功，持久记录为需用户处理的failed",
+              _reported.get("requires_user_action") is True
+              and _latest.get("stage") == "failed"
+              and _latest.get("task_id") == "geometry"
+              and _latest.get("requires_user_action") is True, _progress)
+        _ended = MG.cmd_room_end("底盘结构件")
+        check("room-end遇到同一材料失败仍停止，不重复建议新建Q235",
+              _ended.get("requires_user_action") is True
+              and _ended.get("retryable") is False
+              and "new_part" not in str(_ended.get("message")), _ended)
+        _row = MG._board_entry("底盘结构件", {"active": True, "started_at": 1}, {},
+                              st={"platform_status": "inactive", "report_age_sec": 99999,
+                                  "latest_report": _latest, "evidence": {"any": False}})
+        check("等待用户的材料失败即使超时也不能建议自动重开",
+              _row["state"] == "waiting_user" and not _row["safe_to_restart"], _row)
+    DG._write_json(_wf_path, dict(_geometry, task="校核支架强度与疲劳寿命"))
+    _r_physics = DG.check_room_defense("底盘结构件")
+    check("明确物理任务仍要求材料/物理/领域凭据",
+          _r_physics["ok"] is False and _r_physics["require_physics"] is True
+          and any("防线②物理" in b for b in _r_physics["blockers"])
+          and any("防线③领域" in b for b in _r_physics["blockers"]), _r_physics)
+    check("物理房间在几何总任务下也不能跳过校核",
+          DG.delivery_requirements(_geometry, room="强度校核房")["physics"] is True)
+    check("无任务的独立建模可保持未指定材料",
+          DG.delivery_requirements({})["material"] is False)
+    _empty_room = DG.delivery_requirements({}, room="基础建模房")
+    check("空工作区只传room不自动强加材料或FEA",
+          not _empty_room["material"] and not _empty_room["physics"], _empty_room)
+    _legacy_room = DG.delivery_requirements({"subagent_config": {"rooms": [["结构件", "structural"]]}}, room="结构件")
+    check("已有工程任务登记房间却缺任务原文时保留严格验证",
+          _legacy_room["material"] and _legacy_room["physics"]
+          and _legacy_room["source"] == "legacy_unknown", _legacy_room)
+    DG.write_material_attestation(_part, {"requested_material": "Q235", "applied_name": "Q235",
+                                         "density_kg_m3": 7850, "ok": True})
+    _swi_path = _part + ".material.json.sw_internal.json"
+    DG._write_json(_swi_path, {"sw_internal_material": "AISI 1020", "density_kg_m3": 7850})
+    with patch.object(DG, "credential_is_signed_and_valid", return_value={"ok": True}):
+        _old_att = DG.check_material_attestation(_part)
+        check("旧凭据缺少显式替代标记，也不能凭相同密度放行异牌号",
+              _old_att["ok"] is False and _old_att.get("sw_internal_name_mismatch") is True
+              and _old_att.get("material_self_report_mismatch") is True, _old_att)
+        os.remove(_swi_path)
+        _no_readback = DG.check_material_attestation(_part)
+        check("指定材料缺实际回读记录必须停下，不算验证成功",
+              _no_readback["ok"] is False and _no_readback.get("requires_user_action") is True
+              and _no_readback.get("sw_internal_evaluated") is False, _no_readback)
+    check("材料缺失的句子里仍识别明确强度任务",
+          DG.delivery_requirements({"task": "未指定材料的支架强度校核"})["physics"] is True)
+    check("否定材料和FEA要求不会被误当成物理任务",
+          DG.delivery_requirements({"task": "按图建模，不需要材料和FEA"})["physics"] is False)
+    for _optional in ("材质可以不指定", "不指定任何材料", "没有材料要求", "材料先不管", "材质暂不设置", "材料随意"):
+        _req = DG.delivery_requirements({"task": "按图建模，" + _optional})
+        check("可不指定材料原话不再触发材料门：" + _optional,
+              not _req["material"] and not _req["physics"], _req)
+    for _geometry_task in ("铝合金支架，无需设置载荷", "6061-T6支架，别做有限元分析", "带载荷传感器安装孔的支架"):
+        _req = DG.delivery_requirements({"task": _geometry_task})
+        check("材料/部件描述不自动升级为FEA：" + _geometry_task,
+              not _req["physics"], _req)
+    for _material_task, _expected in (("零件不要用Q235，先只建几何", False),
+                                      ("圆盘，材料改成6082-T6", True),
+                                      ("圆盘，材料选钛合金", True),
+                                      ("给零件赋材为ZXY-117", True)):
+        _req = DG.delivery_requirements({"task": _material_task})
+        check("以肯定/否定赋材动作识别要求：" + _material_task,
+              _req["material"] is _expected and not _req["physics"], _req)
+
+    _captured = {}
+    _context_state = {"task": "按图建模并输出图纸", "step": "context_asked",
+                      "depth_answer": "精简", "param_depth": "lite"}
+    with patch.object(WG, "load_state", lambda: dict(_context_state)), \
+            patch.object(WG, "save_state", lambda st: _captured.update(st)), \
+            patch.object(WG, "_require_root_session", lambda cmd: None), \
+            patch.object(WG, "estimate_mechanics", side_effect=AssertionError("几何任务不应推测载荷")), \
+            patch.object(WG, "write_load_case_file", side_effect=AssertionError("几何任务不应写物理工况")):
+        _context_result = WG.cmd_provide_context("按图中尺寸建模，材料未指定")
+    check("背景收齐后几何任务不再生成默认材料、载荷或确认载荷任务",
+          _context_result["ok"] is True and not _context_result["load_case_written"]
+          and not _captured.get("load_is_estimate")
+          and not (_captured.get("mechanics_result") or {}).get("material_recommend"),
+          _context_result)
 finally:
     if _old_state is not None:
         DG.STATE_DIR = _old_state
@@ -291,7 +439,7 @@ finally:
 print("\n=== Bug⑥-7: 修复是否已同步到【宿主实际加载的安装副本】===")
 try:
     import _store as _store_mod
-    _inst_dir = _store_mod.state_dir()
+    _inst_dir = "" if os.environ.get("DSH_STATE_DIR") else _store_mod.state_dir()
 except Exception as _e_store:
     _inst_dir = ""
     print("     （_store 不可用，跳过部署副本核对：%r）" % (_e_store,))
