@@ -5,10 +5,8 @@
 #   1. removes node_modules/dsh-engineering-ui (and any legacy
 #      dsH-engineering-sw-single-line dir, if one survives from an older install)
 #   2. removes those entries from package.json (dependencies + dsh.profile.bundles)
-#   3. restores cordis.patch.yml from the OLDEST cordis.patch.yml.bak-* the installer
-#      created (= the pre-install state). Without a backup, it removes only the
-#      `sw-single-line:` map block and leaves everything else intact.
-#   4. deletes the installer's .bak-* files for that profile
+#   3. removes only the legacy `sw-single-line:` permission preset from the
+#      current cordis.patch.yml; preserves later user settings and all backups
 # Shared data (~/.dsh/.agent-presets/engineering, ~/.dsh/skills) is left in place;
 # pass -Shared too to remove that as well.
 #
@@ -59,12 +57,14 @@ Say ("DSH_HOME = " + $DshHome)
 
 Step "0. resolve target profiles"
 $targets = @()
+$allProfiles = @(Get-ChildItem -Directory -LiteralPath $ProfilesDir -ErrorAction SilentlyContinue)
 if ($Profile.Count -gt 0) {
     foreach ($p in $Profile) {
-        if (Test-Path (Join-Path $ProfilesDir $p)) { $targets += $p } else { Say ("[WARN] profile '" + $p + "' not found") }
+        if ($allProfiles.Name -notcontains $p) { Say ("[WARN] profile '" + $p + "' not found") }
     }
-} else {
-    Get-ChildItem -Directory -LiteralPath $ProfilesDir -ErrorAction SilentlyContinue | ForEach-Object { $targets += $_.Name }
+}
+foreach ($p in $allProfiles) {
+    if ($Profile.Count -eq 0 -or $Profile -contains $p.Name) { $targets += $p.Name }
 }
 if ($targets.Count -eq 0) { Say "[X] nothing to do"; WriteNoBom $LogPath $script:Log.ToString(); exit 1 }
 Say ("targets = " + ($targets -join ', '))
@@ -105,40 +105,10 @@ foreach ($prof in $targets) {
     } else { Say ("  [WARN] no " + $ProfilePkg); $script:Bad++ }
 
     # 3. cordis.patch.yml
-    $baks = @(Get-ChildItem -LiteralPath $Web -Filter 'cordis.patch.yml.bak-*' -File -ErrorAction SilentlyContinue |
-              Sort-Object Name)
-    if ($baks.Count -gt 0) {
-        $oldest = $baks[0]
-        Copy-Item $oldest.FullName $ProfilePatch -Force
-        Say ("  [OK] cordis.patch.yml restored from pre-install backup " + $oldest.Name)
-    } elseif (Test-Path $ProfilePatch) {
-        $nl = "`n"
-        $raw = [System.IO.File]::ReadAllText($ProfilePatch).TrimStart([char]0xFEFF)
-        if ($raw -match "`r`n") { $nl = "`r`n" }
-        $lines = $raw -split "`r?`n"
-        $out = @()
-        $skip = 0
-        $removed = 0
-        foreach ($l in $lines) {
-            if ($skip -gt 0) {
-                if ($l.Trim().Length -eq 0) { $skip--; continue }
-                if ($l -match '^(\s*)\S') { if ($Matches[1].Length -ge $skip) { continue } }
-                $skip = 0
-            }
-            if ($l -match '^(\s*)sw-single-line:\s*$') {
-                $skip = $Matches[1].Length
-                $removed++
-                continue
-            }
-            $out += $l
-        }
-        WriteNoBom $ProfilePatch (($out -join $nl))
-        Say ("  [OK] removed sw-single-line block (lines removed: " + $removed + ") - everything else untouched")
-    }
-
-    # 4. installer backups
-    foreach ($b in $baks) {
-        if (Zap $b.FullName) { Say ("  [OK] deleted " + $b.Name) } else { $script:Bad++ }
+    if (Remove-DshLegacyPermissionPreset $ProfilePatch) {
+        Say "  [OK] removed residual sw-single-line preset; current settings and backups kept"
+    } elseif (Test-Path -LiteralPath $ProfilePatch) {
+        Say "  [OK] no custom permission preset; current settings and backups kept"
     }
 }
 
@@ -159,3 +129,4 @@ Step "done"
 if ($script:Bad -eq 0) { Say "ALL GOOD." } else { Say ("FINISHED WITH " + $script:Bad + " PROBLEM(S).") }
 Say ("log: " + $LogPath)
 WriteNoBom $LogPath $script:Log.ToString()
+if ($script:Bad -gt 0) { exit 1 }

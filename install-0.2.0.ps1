@@ -44,8 +44,6 @@ $Root        = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DshHome     = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
 $ProfilesDir = Join-Path $DshHome 'profiles'
 $DataDir     = Join-Path $DshHome '.agent-presets\engineering'
-$UserSkills  = Join-Path $DshHome 'skills'
-$PatchSrc    = Join-Path $Root 'profiles\web-0.2.0\cordis.patch.yml'
 $LogPath     = Join-Path $Root 'install-0.2.0.log'
 
 $UI_NAME   = 'dsh-engineering-ui'
@@ -75,47 +73,27 @@ if (-not (Test-Path $ProfilesDir)) {
     Say "    Boot DSH once so the profile is created, then rerun."
     WriteNoBom $LogPath $script:Log.ToString(); exit 1
 }
+$allProfiles = @(Get-ChildItem -Directory -LiteralPath $ProfilesDir | ForEach-Object { $_.Name })
 $targets = @()
 if ($Profile.Count -gt 0) {
     foreach ($p in $Profile) {
-        $d = Join-Path $ProfilesDir $p
-        if (Test-Path $d) { $targets += $p } else { Say ("[WARN] profile '" + $p + "' not found, skipped") }
+        if ($allProfiles -notcontains $p) { throw ("invalid profile name: " + $p) }
+        $targets += $p
     }
-} else {
-    Get-ChildItem -Directory -LiteralPath $ProfilesDir -ErrorAction SilentlyContinue |
-        ForEach-Object { $targets += $_.Name }
-}
+} else { $targets = $allProfiles }
 if ($targets.Count -eq 0) { Say "[X] nothing to install into"; WriteNoBom $LogPath $script:Log.ToString(); exit 1 }
 Say ("targets   = " + ($targets -join ', '))
 
 if (-not (Test-Path $UI_SRC))    { Say ("[X] missing plugin source " + $UI_SRC); WriteNoBom $LogPath $script:Log.ToString(); exit 1 }
-# [problem-2 fix] the sw-single-line plugin + its preset file were removed.
-if (-not (Test-Path $UI_SRC))    { Say ("[X] missing plugin source " + $UI_SRC); WriteNoBom $LogPath $script:Log.ToString(); exit 1 }
-if (-not (Test-Path $PatchSrc))  { Say ("[X] missing " + $PatchSrc); WriteNoBom $LogPath $script:Log.ToString(); exit 1 }
 Say "[OK] preflight"
 
-# ===================== 1. shared data: tools + docs + skills (once) ==========
-Step "1. install tools / docs / skills (shared, paths unchanged from 0.1.x)"
-if (-not (Test-Path $DataDir)) { New-Item -ItemType Directory -Path $DataDir -Force | Out-Null }
-$ToolsSrc = Join-Path $Root 'engineering\tools'
-if (Test-Path $ToolsSrc) {
-    $ToolsDst = Join-Path $DataDir 'tools'
-    if (-not (Test-Path $ToolsDst)) { New-Item -ItemType Directory -Path $ToolsDst -Force | Out-Null }
-    Copy-Item -Path (Join-Path $ToolsSrc '*') -Destination $ToolsDst -Recurse -Force
-    Say ("[OK] tools  ->  " + $ToolsDst)
-} else { Say "[WARN] engineering\tools not found" }
+# The maintained sync owns code copying, runtime exclusions, and registration.
+Step "1. sync code / skills / plugin registration (preserving runtime state)"
+& (Join-Path $Root 'sync-to-dsh.ps1') -Register -Profile $targets
 
 # the SW troubleshooting note has a Chinese filename; glob it instead of naming it
 Get-ChildItem -File (Join-Path $Root 'engineering') -Filter '*.md' -ErrorAction SilentlyContinue |
     ForEach-Object { Copy-Item $_.FullName -Destination $DataDir -Force; Say ("[OK] doc  ->  " + $_.Name) }
-
-$SkillsSrc = Join-Path $Root 'engineering\skills'
-if (Test-Path $SkillsSrc) {
-    if (-not (Test-Path $UserSkills)) { New-Item -ItemType Directory -Path $UserSkills -Force | Out-Null }
-    Copy-Item -Path (Join-Path $SkillsSrc '*') -Destination $UserSkills -Recurse -Force
-    Say ("[OK] skills ->  " + $UserSkills)
-} else { Say "[WARN] engineering\skills not found" }
-
 
 # ============================= per-profile install ===========================
 foreach ($prof in $targets) {
@@ -126,60 +104,9 @@ foreach ($prof in $targets) {
 
     Step ("profile: " + $prof + "   (" + $Web + ")")
     if (-not (Test-Path $ProfilePkg)) { Say ("[X] missing " + $ProfilePkg + " - skipped"); $script:Bad++; continue }
-    if (-not (Test-Path $NodeModules)) { New-Item -ItemType Directory -Path $NodeModules -Force | Out-Null }
-
-    # --- copy plugin packages (copy-overwrite only; never delete) ---
-    # [problem-2 fix] only the UI plugin is installed now
-    foreach ($pair in @(@{ n = $UI_NAME; s = $UI_SRC })) {
-        $dst = Join-Path $NodeModules $pair.n
-        if (-not (Test-Path $dst)) { New-Item -ItemType Directory -Path $dst -Force | Out-Null }
-        Copy-Item -Path (Join-Path $pair.s '*') -Destination $dst -Recurse -Force
-        $n = (Get-ChildItem -Recurse -File $dst -ErrorAction SilentlyContinue).Count
-        Say ("  [OK] " + $pair.n + "  (" + $n + " files)")
-    }
-
-    # --- host-layer permission presets: merge in place, never overwrite ---
-    $bak = $ProfilePatch + '.bak-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
-    if (Test-Path $ProfilePatch) { Copy-Item $ProfilePatch $bak -Force; Say ("  [bak] " + (Split-Path $bak -Leaf)) }
-    # [problem-2 fix] do NOT insert a custom preset; strip any residual block instead.
-    if (Test-Path $ProfilePatch) {
-        $ptxt = [System.IO.File]::ReadAllText($ProfilePatch).TrimStart([char]0xFEFF)
-        if ($ptxt -match 'sw-single-line') {
-            $nlch = if ($ptxt -match "`r`n") { "`r`n" } else { "`n" }
-            $clean = [regex]::Replace($ptxt, '(?m)^[ 	]*sw-single-line:[ 	]*?
-(?:[ 	]{6,}.*?
-)*', '')
-            if ($clean -ne $ptxt) {
-                WriteNoBom $ProfilePatch $clean
-                Say "  [OK] removed residual sw-single-line preset (standard three tiers kept)"
-            } else { Say "  [WARN] sw-single-line found but not auto-removable; edit manually" }
-        } else { Say "  [OK] no custom permission preset (standard three tiers only)" }
-    }
-
-    # --- register bundles in the profile manifest ---
-    $pkg = ([System.IO.File]::ReadAllText($ProfilePkg).TrimStart([char]0xFEFF)) | ConvertFrom-Json
-    $deps = [ordered]@{}
-    foreach ($p in $pkg.dependencies.PSObject.Properties) { $deps[$p.Name] = $p.Value }
-    $deps[$UI_NAME]   = ('file:./node_modules/' + $UI_NAME)
-
-    $bundles = @()
-    foreach ($b in $pkg.dsh.profile.bundles) { $bundles += $b }
-    $ordered = @($UI_NAME)   # [problem-2 fix] only the UI plugin bundle
-    foreach ($name in $ordered) {
-        if ($bundles -notcontains $name) {
-            $idx = [array]::IndexOf($bundles, '@deepseek-ai/dsh-web-app')
-            if ($idx -lt 0) { $bundles += $name }
-            else {
-                $before = @($bundles[0..$idx])
-                $after  = if ($idx + 1 -lt $bundles.Count) { @($bundles[($idx + 1)..($bundles.Count - 1)]) } else { @() }
-                $bundles = $before + @($name) + $after
-            }
-        }
-    }
-    Set-DshProfilePluginEntries $pkg $deps $bundles
-    WriteNoBom $ProfilePkg (($pkg | ConvertTo-Json -Depth 100) + "`n")
-    Say "  [OK] bundles now:"
-    foreach ($b in $bundles) { Say ("         " + $b) }
+    if (Remove-DshLegacyPermissionPreset $ProfilePatch) {
+        Say "  [OK] removed legacy permission preset (changed patch backed up)"
+    } else { Say "  [OK] no legacy permission preset to migrate" }
 
     # --- per-profile verify ---
     $checks = @(
@@ -196,7 +123,6 @@ foreach ($prof in $targets) {
         Say ("  [BOM!] " + $ProfilePkg + " has a UTF-8 BOM - boot will fail"); $script:Bad++
     } else { Say "  [OK] package.json is BOM-less" }
     $pt = [System.IO.File]::ReadAllText($ProfilePatch)
-    if ($pt -match 'sw-single-line') { Say "  [WARN] cordis.patch.yml still contains sw-single-line"; $script:Bad++ } else { Say "  [OK] no custom permission preset remains" }
     if ($pt -match 'defaultPreset')  { Say "  [OK] existing defaultPreset preserved" }
 }
 
@@ -210,3 +136,4 @@ if ($script:Bad -eq 0) {
 }
 Say ("log: " + $LogPath)
 WriteNoBom $LogPath $script:Log.ToString()
+if ($script:Bad -gt 0) { exit 1 }

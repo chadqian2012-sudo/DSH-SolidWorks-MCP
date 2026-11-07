@@ -1238,20 +1238,6 @@ export function apply(ctx) {
         failCounts: new Map(),
         /** 自动续跑：本轮用户输入已续了几次 / 待触发的定时器（跨 turn 保留，见 maybeAutoResume） */
         resumeCount: 0, resumeTimer: null,
-        /**
-         * 待生效的候选 key（provider\0model）。
-         *
-         * ── 为什么需要它（子代理"死了就是死了"的第二个根因）──────────────
-         * agent/model/selection 事件是【本步 preStep 之后】才追加的；
-         * 而子代理的 failureAt 会在 agent/error 时置位，让激活在
-         * "inbox 为空 + 没有 owned children" 时直接判定 ready →
-         * 会话被 dispose，select() 写进去的 pending 选择【再也没机会被读到】。
-         * 主对话因为下一轮一定还会跑，所以它看起来正常 —— 这正是
-         * "主对话能换、子代理不换"的差异来源。
-         * 现在失败时把目标记在这里，并在下一次 pre-step 之前【再写一次】，
-         * 保证只要该 agent 还有任何一步要跑，就一定落到新路由上。
-         */
-        pendingKey: null,
       };
       modelChainState.set(agent.id, st);
     }
@@ -1323,26 +1309,6 @@ export function apply(ctx) {
     try {
       const m = agent && agent.model;
       return !!m && typeof m.select === 'function' && typeof m.current === 'function';
-    } catch (e) {
-      return false;
-    }
-  }
-
-  /**
-   * 把该 agent 的路由改成链里的某个候选。
-   * ⚠️ select() 语义：完整赋值（省略 reasoningEffort = 用适配器默认值，
-   *    不继承旧强度）；对"下一个尚未开始准备的步骤"生效，本步改不动。
-   * @returns 是否成功写入（失败一律静默，绝不影响主流程）
-   */
-  function selectModelRoute(agent, cand) {
-    try {
-      if (!agent || !cand) return false;
-      const m = agent.model;
-      if (!m || typeof m.select !== 'function') return false;
-      const sel = { provider: cand.provider, model: cand.model };
-      if (cand.reasoningEffort !== undefined) sel.reasoningEffort = cand.reasoningEffort;
-      m.select(sel);
-      return true;
     } catch (e) {
       return false;
     }
@@ -1507,27 +1473,6 @@ export function apply(ctx) {
           } catch (e) {}
         }
       }
-      // ── 【子代理不换模型 · 兜底重放】─────────────────────────────────
-      // 见 modelChainState.pendingKey 的注释：select() 写入的 model/selection
-      // 是本步 preStep 之后才落盘的，下一次 preStep 读到的 selection 仍可能是
-      // 旧的。这里在【进入装配前】再补一次 select —— 它只追加一条事件，
-      // 幂等（同一条目不会重复追加），但能保证下一步一定用新路由。
-      try {
-        if (st && st.pendingKey && agent && agent.model && typeof agent.model.select === 'function') {
-          const cfg = readModelChainConfig();
-          const want = cfg.entries.find((e) => modelKey(e.provider, e.model) === st.pendingKey);
-          const curKey = sel && sel.provider ? modelKey(sel.provider, sel.model) : '';
-          if (want && curKey !== st.pendingKey) {
-            selectModelRoute(agent, want);
-            try {
-              console.warn('[dsh-engineering-ui] 子代理接替兜底：pre-step 重新写回 '
-                + want.provider + '/' + want.model);
-            } catch (e) {}
-          } else if (want) {
-            st.pendingKey = null;      // 已经生效 → 清掉待办
-          }
-        }
-      } catch (e) {}
     } catch (e) {}
     return next();
   }));
@@ -1644,10 +1589,10 @@ export function apply(ctx) {
       //   ② 其它任何错误 → 同一模型在同一轮内累计失败到 N 次 → 换；
       //   ③ 不属于错误、但模型确实没产出（空文本）→ 也算不正常。
       // 这样"卡在那儿一直重试同一个模型"就不可能发生了。
-      const _failModelKey = modelKey(payload.provider, (failure && failure.model) || '');
+      const _curKey = modelKey(payload.provider, (failure && failure.model) || '');
       st.failCounts = st.failCounts || new Map();
-      const _cnt = (st.failCounts.get(_failModelKey) || 0) + 1;
-      st.failCounts.set(_failModelKey, _cnt);
+      const _cnt = (st.failCounts.get(_curKey) || 0) + 1;
+      st.failCounts.set(_curKey, _cnt);
 
       // ① 致命类型：立刻换
       const _fatal = MODEL_CHAIN_SWITCH_CODES.has(code);
@@ -1660,19 +1605,12 @@ export function apply(ctx) {
       // 达到任一条件才换；否则交回默认重试链路（让宿主自己重试本模型）
       if (!_fatal && !_tooMany && !_broken) return next();
       // 把"刚失败的模型"记为已试，避免又切回它
-      st.tried.add(modelKey(payload.provider, (failure && failure.model) || ''));
+      st.tried.add(_curKey);
       st.tried.add(modelKey(payload.provider, ''));
       // 同 provider 的候选全部标掉 —— 额度是按账号算的，同家大概率一起挂
       for (const e of cfg.entries) {
         if (e.provider === payload.provider) st.tried.add(modelKey(e.provider, e.model));
       }
-      // ── 【2026-10-30 修正】从【当前实际在用的模型】往后找候选 ──────────
-      // 原实现用 nextModelCandidate(entries, tried) 从头扫，于是：
-      //   · 用户手动选了链里第 5 个，失败后又回到链首第 1 个；
-      //   · 甚至把用户自己选的模型也跳过了。
-      // 现在：先定位当前模型在链中的下标，之后只往后找（找不到再回到链首
-      //       找没过期的，保持"兜底"语义但不打乱用户偏好）。
-      const _curKey = modelKey(payload.provider, (failure && failure.model) || '');
       // ── 【2026-10-30 最终定案】严格【从上到下】按列表顺序替换 ─────────────
       // 用户原话：「不应该是按照从上到下开始替换吗？」
       //
@@ -1703,24 +1641,21 @@ export function apply(ctx) {
         } catch (e) {}
         return next();
       }
-      // 记下【切换前用户实际在用的模型】——老宿主靠它区分
-      // "这是我们自己切走的" 还是 "用户又手动改了选型"；0.2.2 下由
-      // agent/pre-step 监听器做同样的事。
-      st.prevKey = _curKey;
+      // RC1 把选择写入会话，下一步会读取用户或插件最后一次选择的模型。
+      const nativeSelection = supportsModelSelect(agent);
+      if (nativeSelection) agent.model.select(nxt);
+      // 老宿主的请求头可能仍是旧路由；只有它需要记住切换前的选择。
+      else st.prevKey = _curKey;
       st.key = modelKey(nxt.provider, nxt.model);
       st.switched = true;             // ← 老宿主：只有这个标记置位，下一轮才会覆盖请求
       // 额度/限流是按账号算的：把这个 provider 整体隔离一会儿
       quarantineProvider(payload.provider);
-      // 记录"待生效"的候选：即使本步之后会话被判定 ready 并 dispose，
-      // 只要它还有任何一次 pre-step，就会在装配前被重新写回（见 pendingKey 注释）。
-      st.pendingKey = modelKey(nxt.provider, nxt.model);
-      if (supportsModelSelect(agent)) {
+      if (nativeSelection) {
         // ── 0.2.2 通道 ────────────────────────────────────────────────
-        const ok = selectModelRoute(agent, nxt);
         try {
           console.warn('[dsh-engineering-ui] 模型接替（select）：' + payload.provider
             + ' 错误 ' + code + ' → ' + nxt.provider + '/' + nxt.model
-            + (ok ? '，下一次尝试生效' : '（select 写入失败，交还宿主）'));
+            + '，下一次尝试生效');
         } catch (e) {}
         // 失败后自己续一轮，不用用户手动重发（可用 autoResume:false 关掉）
         maybeAutoResume(agent, st, payload, nxt);

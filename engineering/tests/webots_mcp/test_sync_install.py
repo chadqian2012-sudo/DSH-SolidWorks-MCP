@@ -1,4 +1,5 @@
 """Real sync script with isolated source/profile/state; no installed DSH paths."""
+import json
 import os
 from pathlib import Path
 import shutil
@@ -34,4 +35,59 @@ class SyncTests(unittest.TestCase):
             backups=list(state.glob('code.py.bak-sync-*'));self.assertEqual(len(backups),1);self.assertEqual(backups[0].read_text(),'old code')
             run();self.assertEqual(len(list(state.glob('code.py.bak-sync-*'))),1)
             shutil.copy2(backups[0],state/'code.py');self.assertEqual((state/'code.py').read_text(),'old code')
+
+    def test_legacy_installer_preserves_runtime_and_standard_permissions(self):
+        with tempfile.TemporaryDirectory(prefix='s07-legacy-install-') as tmp:
+            root=Path(tmp);source=root/'source';source.mkdir();dsh=root/'dsh'
+            for name in ('install-0.2.0.ps1','sync-to-dsh.ps1'):
+                shutil.copy2(REPO/name,source/name)
+            tools=source/'engineering/tools';tools.mkdir(parents=True)
+            shutil.copy2(REPO/'engineering/tools/profile-manifest.ps1',tools)
+            (tools/'code.py').write_text('new code')
+            shutil.copy2(REPO/'engineering/install-plugin.ps1',source/'engineering/install-plugin.ps1')
+            state=dsh/'.agent-presets/engineering/tools';state.mkdir(parents=True)
+            runtime=('settings.json','custom_materials.json','mode_state.json','sw_monitor.pid')
+            for name in runtime:
+                (tools/name).write_text('source state');(state/name).write_text('user state')
+            plugin=source/'engineering/plugins/dsh-engineering-ui';(plugin/'lib').mkdir(parents=True)
+            for name in ('package.json','preset-engineering.patch.yml','lib/index.js'):
+                (plugin/name).write_text('{}')
+            legacy='      sw-single-line:\n        sandbox: workspace-write\n\n        approval: never\n'
+            patch='# sw-single-line is retired; preserve this comment\n- id: persona\n  config:\n    prefix: |\n      sw-single-line:\n        keep this user text\n    presets:\n      sw-single-line:\n        custom: keep\n    nested:\n      - id: permission\n        config:\n          presets:\n            sw-single-line:\n              custom: keep\n- id: permission\n  config:\n    defaultPreset: workspace-write\n    presets:\n      read-only:\n        approval: ask\n'+legacy+'      workspace-write:\n        approval: ask\n      danger-full-access:\n        approval: never\n'
+            for name in ('desktop','web','untargeted'):
+                profile=dsh/'profiles'/name;profile.mkdir(parents=True)
+                manifest={'dependencies':{'existing':'1.0.0'},'custom':'keep','dsh':{'custom':'keep','profile':{'custom':'keep','bundles':['@deepseek-ai/dsh-base','@deepseek-ai/dsh-web-app']}}}
+                (profile/'package.json').write_text(json.dumps(manifest))
+                (profile/'cordis.patch.yml').write_bytes(patch.replace('\n','\r\n' if name=='web' else '\n').encode())
+            env={key:value for key,value in os.environ.items() if key.upper()!='PSMODULEPATH'}
+            env['DSH_HOME']=str(dsh)
+            wrapper=source/'selected.ps1'
+            wrapper.write_text("& (Join-Path $PSScriptRoot 'install-0.2.0.ps1') -Profile @('desktop', 'web')")
+            for script in (wrapper,source/'install-0.2.0.ps1'):
+                result=subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(script)],env=env,capture_output=True,timeout=30)
+                self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
+                for name in runtime:self.assertEqual((state/name).read_text(),'user state',name)
+                for name in ('desktop','web','untargeted'):
+                    profile=dsh/'profiles'/name;manifest=json.loads((profile/'package.json').read_text())
+                    targeted=script!=wrapper or name!='untargeted'
+                    self.assertEqual('dsh-engineering-ui' in manifest['dependencies'],targeted)
+                    self.assertEqual(manifest['custom'],'keep');self.assertEqual(manifest['dsh']['custom'],'keep');self.assertEqual(manifest['dsh']['profile']['custom'],'keep')
+                    expected=patch.replace(legacy,'\n') if targeted else patch
+                    self.assertEqual((profile/'cordis.patch.yml').read_text(),expected)
+                    self.assertEqual(len(list(profile.glob('cordis.patch.yml.bak-*'))),int(targeted))
+            self.assertEqual((state/'code.py').read_text(),'new code')
+            helper=source/'engineering/install-plugin.ps1'
+            result=subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(helper)],env=env,capture_output=True,timeout=30)
+            self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
+            self.assertEqual(len(list((dsh/'profiles/web').glob('cordis.patch.yml.bak-*'))),1)
+            # Registration errors must reach the legacy entry point's exit code.
+            for invalid in ('{bad json','null','[]','[{}]'):
+                (dsh/'profiles/desktop/package.json').write_text(invalid)
+                result=subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(source/'install-0.2.0.ps1')],env=env,capture_output=True,timeout=30)
+                self.assertNotEqual(result.returncode,0,invalid)
+            outside=dsh/'outside';outside.mkdir();(outside/'package.json').write_text('{}')
+            for script in ('install-0.2.0.ps1','sync-to-dsh.ps1'):
+                result=subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(source/script),'-Profile','../outside'],env=env,capture_output=True,timeout=30)
+                self.assertNotEqual(result.returncode,0,script)
+                self.assertFalse((outside/'node_modules').exists())
 if __name__=='__main__':unittest.main()

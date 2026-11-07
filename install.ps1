@@ -36,7 +36,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $Root 'engineering\tools\profile-manifest.ps1')
 
 function Say($m, $c = 'Gray') { Write-Host $m -ForegroundColor $c }
 function Rule($t) {
@@ -93,82 +92,15 @@ if (-not (Test-Path $UiSrc)) {
     Say ("[X] plugin source missing: " + $UiSrc) Red
     exit 1
 }
-$Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 
-# ---- 1. register plugin in every profile ------------------------------------
-Rule "1/2  register plugin in profiles"
-$regCount = 0
-foreach ($prof in $targets) {
-    $pd  = Join-Path $ProfilesDir $prof
-    $pkg = Join-Path $pd 'package.json'
-    if (-not (Test-Path $pkg)) {
-        Say ("  [skip] " + $prof + " : no package.json") DarkGray
-        continue
-    }
-    $obj = ([System.IO.File]::ReadAllText($pkg)) | ConvertFrom-Json
-
-    $deps = [ordered]@{}
-    foreach ($p in $obj.dependencies.PSObject.Properties) { $deps[$p.Name] = $p.Value }
-    $needDep = -not $deps.Contains('dsh-engineering-ui')
-
-    $bundles = @()
-    if ($obj.dsh -and $obj.dsh.profile -and $obj.dsh.profile.bundles) {
-        foreach ($b in $obj.dsh.profile.bundles) { $bundles += $b }
-    }
-    $needBundle = ($bundles -notcontains 'dsh-engineering-ui')
-
-    if (-not $needDep -and -not $needBundle) {
-        Say ("  [same] " + $prof + " : already registered") DarkGray
-        continue
-    }
-    if ($DryRun) {
-        Say ("    [dry] " + $prof + " : would register (dep=" + $needDep +
-             " bundle=" + $needBundle + ")") DarkGray
-        $regCount++
-        continue
-    }
-
-    if ($needDep) {
-        $deps['dsh-engineering-ui'] = 'file:./node_modules/dsh-engineering-ui'
-    }
-    if ($needBundle) {
-        # Insert right before the web-app bundle so the UI shell the plugin
-        # extends is loaded first; append when the anchor is absent.
-        $idx = [array]::IndexOf($bundles, '@deepseek-ai/dsh-web-app')
-        if ($idx -lt 0) {
-            $bundles += 'dsh-engineering-ui'
-        } else {
-            $before = @($bundles[0..$idx])
-            $after  = @()
-            if ($idx + 1 -lt $bundles.Count) {
-                $after = @($bundles[($idx + 1)..($bundles.Count - 1)])
-            }
-            $bundles = $before + @('dsh-engineering-ui') + $after
-        }
-    }
-
-    Set-DshProfilePluginEntries $obj $deps $bundles
-
-    Copy-Item $pkg ($pkg + '.bak-sync-' + $Stamp) -Force
-    [System.IO.File]::WriteAllText($pkg,
-        ($obj | ConvertTo-Json -Depth 100),
-        (New-Object System.Text.UTF8Encoding($false)))
-    Say ("  [OK] " + $prof + " : registered") Green
-    $regCount++
-}
-
-# ---- 2. sync code (delegates to the maintained sync script) -----------------
-Rule "2/2  sync engineering code"
+# Sync owns registration and code copying for the selected profiles.
+Rule "sync engineering code and register profiles"
 $Sync = Join-Path $Root 'sync-to-dsh.ps1'
 if (-not (Test-Path $Sync)) {
     Say ("  [X] sync-to-dsh.ps1 not found next to install.ps1: " + $Sync) Red
     exit 1
 }
-$syncArgs = @()
-if ($DryRun) { $syncArgs += '-DryRun' }
-if ($Profile.Count -gt 0) { $syncArgs += @('-Profile') + $Profile }
-& powershell -NoProfile -ExecutionPolicy Bypass -File $Sync @syncArgs
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& $Sync -DryRun:$DryRun -Register -Profile $targets
 
 if ($DryRun) {
     Rule "dry run complete"
@@ -198,7 +130,7 @@ foreach ($prof in $targets) {
 
 # ---- done -------------------------------------------------------------------
 Rule "done"
-Say ("  registered profiles : " + $regCount) Gray
+Say ("  target profiles     : " + ($targets -join ", ")) Gray
 Say ("  verification errors : " + $bad) Gray
 Say ""
 Say "  NEXT STEPS" Yellow
