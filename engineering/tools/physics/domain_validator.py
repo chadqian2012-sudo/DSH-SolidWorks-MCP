@@ -20,6 +20,8 @@ DSVA 不是"插件"，而是约束生成器的"宪法"。
 - housing: 壳体（箱体/盖板）
 - mold: 模具（型腔/型芯）
 """
+from __future__ import annotations
+
 import json
 import os
 import glob as _glob

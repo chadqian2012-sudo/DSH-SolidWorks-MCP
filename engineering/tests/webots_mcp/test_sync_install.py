@@ -35,6 +35,16 @@ class SyncTests(unittest.TestCase):
             backups=list(state.glob('code.py.bak-sync-*'));self.assertEqual(len(backups),1);self.assertEqual(backups[0].read_text(),'old code')
             run();self.assertEqual(len(list(state.glob('code.py.bak-sync-*'))),1)
             shutil.copy2(backups[0],state/'code.py');self.assertEqual((state/'code.py').read_text(),'old code')
+            # A code-only sync still refreshes an installed copy without editing a damaged manifest.
+            plugin = source/'engineering/plugins/dsh-engineering-ui'
+            plugin.mkdir(parents=True)
+            (plugin/'index.js').write_text('new')
+            installed = profile/'node_modules/dsh-engineering-ui'
+            installed.mkdir(parents=True)
+            (profile/'package.json').write_text('{broken')
+            run()
+            self.assertEqual((installed/'index.js').read_text(), 'new')
+            self.assertEqual((profile/'package.json').read_text(), '{broken')
 
     def test_legacy_installer_preserves_runtime_and_standard_permissions(self):
         with tempfile.TemporaryDirectory(prefix='s07-legacy-install-') as tmp:
@@ -90,4 +100,35 @@ class SyncTests(unittest.TestCase):
                 result=subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(source/script),'-Profile','../outside'],env=env,capture_output=True,timeout=30)
                 self.assertNotEqual(result.returncode,0,script)
                 self.assertFalse((outside/'node_modules').exists())
+
+    def test_bad_profile_stops_all_changes_before_install_or_uninstall(self):
+        with tempfile.TemporaryDirectory(prefix='s07-profile-preflight-') as tmp:
+            root=Path(tmp);source=root/'source';source.mkdir();home=root/'home'
+            for name in ('sync-to-dsh.ps1','uninstall-0.2.0.ps1'):
+                shutil.copy2(REPO/name,source/name)
+            tools=source/'engineering/tools';tools.mkdir(parents=True)
+            shutil.copy2(REPO/'engineering/tools/profile-manifest.ps1',tools)
+            (tools/'code.py').write_text('new code')
+            plugin=source/'engineering/plugins/dsh-engineering-ui';plugin.mkdir(parents=True)
+            (plugin/'package.json').write_text('{"name":"dsh-engineering-ui"}')
+            state=home/'.agent-presets/engineering/tools';state.mkdir(parents=True)
+            (state/'code.py').write_text('installed code')
+            for name,text in (('desktop','{}'),('web','{damaged JSON')):
+                profile=home/'profiles'/name;installed=profile/'node_modules/dsh-engineering-ui';installed.mkdir(parents=True)
+                (profile/'package.json').write_text(text);(installed/'package.json').write_text('installed plugin')
+            env={key:value for key,value in os.environ.items() if key.upper()!='PSMODULEPATH'};env['DSH_HOME']=str(home)
+            def run(script,*args):
+                return subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(source/script),*args],env=env,capture_output=True,timeout=30)
+            before={str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()}
+            for script,args in (('sync-to-dsh.ps1',('-Register',)),('uninstall-0.2.0.ps1',('-Shared',))):
+                result=run(script,*args)
+                self.assertNotEqual(result.returncode,0,script)
+                self.assertEqual({str(p.relative_to(home)):p.read_bytes() for p in home.rglob('*') if p.is_file()},before,script)
+            (home/'profiles/web/package.json').write_text('{}')
+            for name in ('webots-simulation','user-custom'):
+                skill=home/'skills'/name;skill.mkdir(parents=True);(skill/'SKILL.md').write_text('keep custom skill')
+            result=run('uninstall-0.2.0.ps1','-Shared')
+            self.assertEqual(result.returncode,0,result.stderr.decode(errors='replace'))
+            self.assertFalse((home/'skills/webots-simulation').exists())
+            self.assertEqual((home/'skills/user-custom/SKILL.md').read_text(),'keep custom skill')
 if __name__=='__main__':unittest.main()

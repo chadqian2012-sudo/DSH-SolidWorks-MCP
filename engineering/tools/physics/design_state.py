@@ -5,6 +5,8 @@ design_state.py — 迭代状态管理
 记录每一轮迭代的参数变更、仿真结果、以及回滚点。
 支持版本化追踪：每轮都有唯一 run_id，可通过 parent_run_id 建立链条。
 """
+from __future__ import annotations
+
 import os
 import json
 import time

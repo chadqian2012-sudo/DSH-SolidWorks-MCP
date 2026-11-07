@@ -32,6 +32,8 @@ fatigue.py — 疲劳强度与设计寿命（30 年）校核
 设计原则：宁可保守也不虚高。所有输入缺失时用明确的默认值，并在结果里
 标注 default_used，绝不静默假设。
 """
+from __future__ import annotations
+
 from typing import Any, Optional
 
 # ── 可靠度系数 ke（Shigley 表，对应 90%~99.99% 可靠度）──────────────────

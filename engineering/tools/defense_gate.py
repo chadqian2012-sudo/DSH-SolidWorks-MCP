@@ -1995,8 +1995,11 @@ def _host_base(require_owner=True):
           PowerShell 查 TCP 表，每次调用都做会让门禁明显变慢。
     """
     rt = _read_runtime()
-    port = rt.get("port")
-    if not port:
+    try:
+        port = int(rt.get("port") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not 0 < port < 65536:
         return None
     if require_owner:
         global _HOST_OWNER_CACHE
@@ -2015,20 +2018,19 @@ def _host_base(require_owner=True):
         if not _ok:
             # 归属校验不通过 → 不交出基地址（fail-closed，不把请求发往可疑端点）
             return None
-    host = str(rt.get("host") or "127.0.0.1")
     # [Bug8] 把本副本根目录声明给宿主，使其受管根覆盖两个部署位置
     try:
         _publish_workspace_root()
     except Exception:
         pass
-    return "http://%s:%s" % (host, port)
+    return "http://127.0.0.1:%d" % port
 
 
 # 端口归属校验缓存（避免每次调用都起 PowerShell 查 TCP 表）
 _HOST_OWNER_CACHE = {}
 
 
-def _post_json(url, payload, timeout=5.0):
+def _post_json(url, payload, timeout=5.0, token=None):
     """向宿主 POST JSON；返回解析后的 dict 或 None。"""
     try:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -2036,7 +2038,10 @@ def _post_json(url, payload, timeout=5.0):
             url, data=data,
             headers={"content-type": "application/json; charset=utf-8"},
             method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        if token:
+            req.add_unredirected_header("x-dsh-engineering-token", token)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", "replace")
         return json.loads(body)
     except Exception:
@@ -2224,7 +2229,20 @@ def request_signed_credential(spec):
     base = _host_base()
     if not base:
         return {"ok": False, "error": "宿主未公布防线端点（runtime.json 缺失或无私端口）"}
-    res = _post_json(base + "/dsh-engineering-ui/defense/sign", spec, timeout=8.0)
+    token = os.environ.get("DSH_ENGINEERING_TOKEN")
+    host_tools = _host_tools_dir()
+    if not token and host_tools:
+        try:
+            with open(os.path.join(host_tools, ".defense", "local.token"), encoding="utf-8-sig") as f:
+                token = f.read().strip()
+        except FileNotFoundError:
+            pass
+        except (OSError, UnicodeError):
+            return {"ok": False, "error": "本机令牌配置不可读或为空，已拒绝签发"}
+        else:
+            if not token:
+                return {"ok": False, "error": "本机令牌配置不可读或为空，已拒绝签发"}
+    res = _post_json(base + "/dsh-engineering-ui/defense/sign", spec, timeout=8.0, token=token)
     if not isinstance(res, dict):
         return {"ok": False, "error": "宿主签发端点无响应"}
     return res

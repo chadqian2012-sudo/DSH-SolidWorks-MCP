@@ -135,9 +135,10 @@ def main():
           all(("state" in i and "detail" in i and "fix" in i) for i in res["items"]),
           str(res["items"][:1]))
     check("status 取值合法", res["status"] in ("ok", "warn", "bad"), res["status"])
-    # 解释器必须是 >=3.6 才被采纳（本机应能找到）
+    # 解释器必须是 >=3.8、64 位才被采纳（本机应能找到）
     py = res.get("python") or {}
     check("探测到了 Python 解释器", bool(py.get("chosen")), str(py)[:200])
+    check("自检返回实际解释器路径", py.get("chosen") == sys.executable, str(py)[:200])
 
     section("E. 修复提示词（发给新对话的那一段）")
     text = EC.install_prompt(res)
@@ -157,12 +158,25 @@ def main():
     section("F. sw_bridge.py 的 Python 版本闸门")
     src = open(os.path.join(HERE, "sw_bridge.py"), encoding="utf-8").read()
     head = src[:src.index("import os")]
-    check("闸门在任何 f-string 之前",
-          "sys.version_info < (3, 6)" in head, head[-200:])
-    check("闸门本身不含 f-string（旧解释器也能跑）",
+    check("导入工具前检查最低版本与位数",
+          "sys.version_info < (3, 8)" in head and "sys.maxsize <= 2**32" in head,
+          head[-200:])
+    check("版本检查本身不含 f-string",
           ('f"' not in head and "f'" not in head), head[-200:])
     check("闸门给出可操作的 JSON",
           '"hint"' in head and "3.11" in head)
+    for ver, bits, expected in [((3, 6, 9), 64, False), ((3, 7, 9), 64, False),
+                                ((3, 8, 10), 32, False), ((3, 8, 10), 64, True)]:
+        prefix = "import sys;sys.version_info=%r;sys.maxsize=%d\n" % (
+            ver, 2**(bits - 1) - 1)
+        result = subprocess.run([sys.executable, "-c", prefix + EC.PROBE_CODE],
+                                capture_output=True, text=True, timeout=30)
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        check("自检边界 %s / %d 位" % (ver, bits), data["ok"] == expected, str(data))
+        result = subprocess.run([sys.executable, "-c", prefix + head],
+                                capture_output=True, text=True, timeout=10)
+        check("桥接入口边界 %s / %d 位" % (ver, bits),
+              result.returncode == (0 if expected else 2), result.stderr)
 
     section("G. 设置页/宿主路由契约（静态）")
     # ── 【测试自身修复】安装副本里没有 plugins/ 目录 ──────────────────────

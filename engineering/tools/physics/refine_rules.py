@@ -11,6 +11,8 @@ refine_rules.py — 自动修正规则引擎
   4. 每次修正有明确的物理依据
   5. 不超过最大迭代次数
 """
+from __future__ import annotations
+
 import math
 from typing import Any, Optional
 

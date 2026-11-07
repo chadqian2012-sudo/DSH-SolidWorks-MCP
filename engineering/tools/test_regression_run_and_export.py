@@ -684,6 +684,28 @@ for _label, _solid, _changed, _expected in (
     check("风管 " + _label, _duct_result.get("ok") is _expected and _material_correct
           and not _duct_result.get("defense_bypassed"), _duct_result.get("error"))
 
+_duct_spec = _p("duct-multiconfig.json")
+with open(_duct_path, "wb") as _f:
+    _f.write(b"original multiconfiguration file")
+with open(_duct_spec, "w", encoding="utf-8") as _f:
+    json.dump({"mode": "resize", "outlet_width_mm": 70, "output_path": _duct_path}, _f)
+_duct_model = types.SimpleNamespace(GetPathName=lambda: _duct_path,
+    GetSaveFlag=lambda: False, GetConfigurationCount=lambda: 2)
+_duct_sw = types.SimpleNamespace(ActiveDoc=_duct_model,
+    GetOpenDocumentByName=lambda path: _duct_model)
+with open(_duct_script, encoding="utf-8") as _f:
+    _duct_source = _f.read()
+with patch.dict(os.environ, {"DSH_DUCT_SPEC": _duct_spec}):
+    try:
+        exec(compile(_duct_source, _duct_script, "exec"), {"sw": _duct_sw})
+    except RuntimeError as _e:
+        _duct_rejected = "exactly one configuration" in str(_e)
+    else:
+        _duct_rejected = False
+with open(_duct_path, "rb") as _f:
+    check("多配置续改在查询草图和保存前拒绝，原文件不变",
+          _duct_rejected and _f.read() == b"original multiconfiguration file")
+
 
 # ══════════════════════════════════════════════════════════════════════
 section("④ 结构与常量自检（防后续回归）")

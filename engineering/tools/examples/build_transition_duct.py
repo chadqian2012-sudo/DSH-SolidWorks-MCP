@@ -105,6 +105,8 @@ def sketch_model_point(sw, sk, coords):
 
 
 def inspect(sw, doc):
+    if prop(doc, "GetConfigurationCount") != 1:
+        raise RuntimeError("Duct requires exactly one configuration; refusing to edit or save")
     part = win32com.client.CastTo(doc, "IPartDoc")
     counts = body_count(part, 0), body_count(part, 1)
     if counts != (0, 1):

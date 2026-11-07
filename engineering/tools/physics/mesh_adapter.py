@@ -12,6 +12,8 @@ mesh_adapter.py — STEP 导出与网格数据生成适配层
 
 本模块优先使用 Level 0/1，降级到 Level 2/3 仅在可用时。
 """
+from __future__ import annotations
+
 import os
 import json
 import subprocess

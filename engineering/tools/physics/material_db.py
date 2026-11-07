@@ -5,6 +5,8 @@ material_db.py — 工程材料数据库（纯 Python，零外部依赖）
 涵盖常用机械材料。所有单位：MPa（弹性模量/屈服强度）、kg/m³（密度）。
 材料属性来自公开工程手册，实际设计请以供应商技术数据书为准。
 """
+from __future__ import annotations
+
 from typing import Any
 
 # ── 铝合金 ──────────────────────────────────────────────

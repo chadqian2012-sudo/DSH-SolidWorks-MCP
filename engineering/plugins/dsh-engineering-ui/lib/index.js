@@ -343,79 +343,6 @@ const SENSITIVE_ROUTES = new Set([
   PREFIX + '/side-chat',
 ]);
 
-function localTokenOf() {
-  try {
-    if (process.env.DSH_ENGINEERING_TOKEN) {
-      return String(process.env.DSH_ENGINEERING_TOKEN);
-    }
-    const dir = findToolsDir();
-    if (!dir) return '';
-    const p = path.join(dir, '.defense', 'local.token');
-    if (!fs.existsSync(p)) return '';
-    return String(fs.readFileSync(p, 'utf8')).trim();
-  } catch (e) {
-    return '';
-  }
-}
-
-/**
- * 统一请求守卫。返回 {ok:true, degraded?} 或 {ok:false, status, error}。
- * @param {string} routePath - 已注册的路由路径（用于敏感端点判定）
- */
-function guardRequest(req, routePath) {
-  // ① 仅 loopback
-  if (!isLoopbackRequest(req)) {
-    return { ok: false, status: 403,
-             error: '仅接受本机（loopback）请求：远程访问被拒绝' };
-  }
-  // ② 浏览器跨站（CSRF）
-  if (isCrossSiteRequest(req)) {
-    return { ok: false, status: 403,
-             error: '拒绝跨站来源请求（Origin/Referer 非本机）' };
-  }
-  // ③ 高副作用端点：若配置了本地令牌则强制携带
-  if (routePath && SENSITIVE_ROUTES.has(routePath)) {
-    const want = localTokenOf();
-    if (want) {
-      const got = headerOf(req, 'x-dsh-engineering-token');
-      if (got !== want) {
-        return { ok: false, status: 403,
-                 error: '该端点需要本机令牌（x-dsh-engineering-token）' };
-      }
-      return { ok: true };
-    }
-    // 未配置令牌：放行但如实标注降级
-    return { ok: true, degraded: true };
-  }
-  return { ok: true };
-}
-
-/** 包装一个 route 定义，注入统一守卫。 */
-function guardRoute(route) {
-  const orig = route && route.handler;
-  if (typeof orig !== 'function') return route;
-  return Object.assign({}, route, {
-    handler: async (req, res) => {
-      const g = guardRequest(req, route.path);
-      if (!g.ok) {
-        try { console.warn('[dsh-engineering-ui] 拒绝请求 ' + route.path + '：' + g.error); } catch (e) {}
-        return send(res, g.status, { ok: false, error: g.error, path: route.path });
-      }
-      // ── 【P0 修复】全路由限流 ────────────────────────────────────────
-// 原先只有 4 条 /defense/* 走 rateLimited，而 /side-chat
-      //   会触发真实 LLM 调用、/conn-launch 会 spawn 本地进程，却完全无限流
-      //   → 任何本地进程可反复触发（资源滥用 / 可用性 DoS）。
-      //   这里在守卫层统一加桶，按路径分桶；rateLimited 定义在文件后段，
-      //   故用 typeof 惰性判定，避免依赖声明顺序。
-      if (typeof rateLimited === 'function' &&
-          rateLimited('route:' + (route.path || 'unknown'))) {
-        return send(res, 429, { ok: false, error: '请求过于频繁（限流）', path: route.path });
-      }
-      return orig(req, res);
-    },
-  });
-}
-
 // 【问题3】阻止对话提前结束
 // 【Bug3 修复】原文案过于刚性：只声明"禁止结束"，却没说清"什么情况算完成"。
 // 导致 AI 明明已经交付工件（图纸已导出、验证已通过），仍被反复拉回来，
@@ -560,6 +487,70 @@ async function parentOf(ctx, childId) {
 
 export function apply(ctx) {
   const disposers = [];
+
+  // 文件令牌与路由必须使用本次插件实例的 findToolsDir。
+  function localTokenOf() {
+    try {
+      if (process.env.DSH_ENGINEERING_TOKEN) {
+        return String(process.env.DSH_ENGINEERING_TOKEN);
+      }
+      const dir = findToolsDir();
+      if (!dir) return '';
+      const p = path.join(dir, '.defense', 'local.token');
+      return String(fs.readFileSync(p, 'utf8')).trim() || null;
+    } catch (e) {
+      return e && e.code === 'ENOENT' ? '' : null;
+    }
+  }
+
+  /** 统一请求守卫。返回 {ok:true, degraded?} 或 {ok:false, status, error}。 */
+  function guardRequest(req, routePath) {
+    // ① 仅 loopback
+    if (!isLoopbackRequest(req)) {
+      return { ok: false, status: 403,
+               error: '仅接受本机（loopback）请求：远程访问被拒绝' };
+    }
+    // ② 浏览器跨站（CSRF）
+    if (isCrossSiteRequest(req)) {
+      return { ok: false, status: 403,
+               error: '拒绝跨站来源请求（Origin/Referer 非本机）' };
+    }
+    // ③ 高副作用端点：若配置了本地令牌则强制携带
+    if (routePath && SENSITIVE_ROUTES.has(routePath)) {
+      const want = localTokenOf();
+      if (want === null) {
+        return { ok: false, status: 403,
+                 error: '本机令牌配置不可读或为空，已拒绝该端点' };
+      }
+      if (want) {
+        const got = headerOf(req, 'x-dsh-engineering-token');
+        if (got !== want) {
+          return { ok: false, status: 403,
+                   code: 'ENGINEERING_TOKEN_REQUIRED',
+                   error: '该端点需要本机令牌（x-dsh-engineering-token）' };
+        }
+        return { ok: true };
+      }
+      return { ok: true, degraded: true };
+    }
+    return { ok: true };
+  }
+
+  /** 包装一个 route 定义，注入统一守卫。限速仍由防线端点负责。 */
+  function guardRoute(route) {
+    const orig = route && route.handler;
+    if (typeof orig !== 'function') return route;
+    return Object.assign({}, route, {
+      handler: async (req, res) => {
+        const g = guardRequest(req, route.path);
+        if (!g.ok) {
+          try { console.warn('[dsh-engineering-ui] 拒绝请求 ' + route.path + '：' + g.error); } catch (e) {}
+          return send(res, g.status, { ok: false, code: g.code, error: g.error, path: route.path });
+        }
+        return orig(req, res);
+      },
+    });
+  }
 
   // ── cwd prompt 变量 · 已彻底移除 ──────────────────────────────────────
   // 历史：0.2.1 移除了 dsh-agent-loop 对 cwd 变量的注册，而工程模式人设首行
@@ -829,7 +820,10 @@ export function apply(ctx) {
     // ② 工作区副本（未安装时的回退）
     try {
       const eng = process.env.DSH_ENGINEERING_ROOT;
-      if (eng) push(path.join(eng, 'tools'));
+      if (eng) {
+        const root = path.resolve(eng);
+        push(path.basename(root).toLowerCase() === 'tools' ? root : path.join(root, 'tools'));
+      }
     } catch (e) {}
     try {
       const cwd = process.cwd();
@@ -3508,7 +3502,7 @@ export function apply(ctx) {
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  //  【换机事故修复】Python 解释器解析：必须校验【版本 >= 3.6】
+  //  Python 解释器须满足 README 的 3.8+、64 位要求。
   // ══════════════════════════════════════════════════════════════════════
   // 微机房实测（用户提供的现场结论）：
   //   · 默认 python 指向 Python 3.5.3 (32-bit)；
@@ -3521,12 +3515,12 @@ export function apply(ctx) {
   // 新实现（三重）：
   //   ① 顺序改为 py 在前：Windows 的 py.exe 是官方启动器，会挑最新 3.x；
   //   ② 逐候选跑【真探针】（打印版本 + 能否 import pywin32），
-  //      >=3.6 才采纳 —— 只认「真的能跑」，不认「存在」；
+  //      >=3.8、64 位才采纳；返回实际解释器路径，后续执行不再重新选版本；
   //   ③ 结果缓存 5 分钟；详情模式（settings 页环境检查）不吃缓存，
   //      并把被拒的候选一并返回，直接告诉用户「为什么没用那个 python」。
   const PYTHON_MIN_MAJOR = 3;
-  const PYTHON_MIN_MINOR = 6;
-  let pyCache = null, pyCacheAt = 0;
+  const PYTHON_MIN_MINOR = 8;
+  let pyCache = null, pyCacheAt = 0, pyCacheKey = '';
   const PY_CACHE_MS = 5 * 60 * 1000;
 
   /** 把 '3.13.15' 解析成 [3,13]；解析不了返回 null。 */
@@ -3540,19 +3534,27 @@ export function apply(ctx) {
 
   /** py.exe 需要显式 -3 才是 Python 3。 */
   function pyArgsFor(c) {
-    return c === 'py' ? ['-3'] : [];
+    return /(^|[\\/])py(?:\.exe)?$/i.test(c) ? ['-3'] : [];
   }
 
-  /** 用某解释器跑一次探针，返回 {exe, version, ok, pywin32, error}。 */
+  /** 探测并固定实际解释器，避免 py 启动器的默认版本与 -3 不一致。 */
   function probePythonExe(c) {
     const pre = [c].concat(pyArgsFor(c));
-    let version = null, error = null, pywin32 = null;
+    let exe = null, version = null, bits = null, error = null, pywin32 = null;
     try {
       const r = spawnSync(pre[0], pre.slice(1).concat(['-c',
-        'import sys;print("%d.%d.%d" % sys.version_info[:3])']),
+        ['import json, sys',
+          'out = {"version": "%d.%d.%d" % sys.version_info[:3], "executable": sys.executable, "bits": 64 if sys.maxsize > 2**32 else 32}',
+          'try:', ' import win32com.client', ' out["pywin32"] = True',
+          'except Exception:', ' out["pywin32"] = False',
+          'print(json.dumps(out))'].join('\n')]),
         { encoding: 'utf8', timeout: 15000, windowsHide: true, env: pyEnv() });
       if (r && r.status === 0) {
-        version = String((r.stdout || '')).trim() || null;
+        const data = JSON.parse(String(r.stdout || '').trim().split(/\r?\n/).pop());
+        exe = data.executable || null;
+        version = data.version || null;
+        bits = data.bits;
+        pywin32 = data.pywin32;
       } else {
         error = 'exit=' + (r && r.status) + ' ' +
           String(((r && r.stderr) || '') + ((r && r.stdout) || '')).trim().slice(0, 200);
@@ -3563,15 +3565,9 @@ export function apply(ctx) {
     const ver = parsePyVersion(version);
     const okVer = !!ver && (ver[0] > PYTHON_MIN_MAJOR ||
       (ver[0] === PYTHON_MIN_MAJOR && ver[1] >= PYTHON_MIN_MINOR));
-    if (okVer) {
-      try {
-        const r2 = spawnSync(pre[0], pre.slice(1).concat(['-c',
-          'import win32com.client;print("ok")']),
-          { encoding: 'utf8', timeout: 15000, windowsHide: true, env: pyEnv() });
-        pywin32 = !!(r2 && r2.status === 0);
-      } catch (e) { pywin32 = false; }
-    }
-    return { exe: c, version, ok: okVer, pywin32, error };
+    const ok = !!exe && okVer && bits === 64;
+    if (!ok && !error) error = '需要 Python 3.8+（64 位），当前 ' + version + '（' + bits + ' 位）';
+    return { exe, candidate: c, version, bits, ok, pywin32, error };
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -3614,7 +3610,7 @@ export function apply(ctx) {
   }
 
   /**
-   * 找到【真的能跑】的 Python 解释器（>= 3.6）。
+   * 找到符合要求的 Python 解释器（>= 3.8，64 位）。
    * @param {boolean} detail true = 详情模式（每次真探测、返回全部候选，供环境检查页）
    * @returns {string|null|object} 详情模式返回 {chosen, tried}
    */
@@ -3625,10 +3621,13 @@ export function apply(ctx) {
       const hit = tried.filter((t) => t.ok)[0] || null;
       return { chosen: hit ? hit.exe : null, tried };
     }
-    if (pyCache !== null && (Date.now() - pyCacheAt) < PY_CACHE_MS) return pyCache;
+    const key = JSON.stringify(cands);
+    if (pyCache !== null && key === pyCacheKey && (Date.now() - pyCacheAt) < PY_CACHE_MS) return pyCache;
+    pyCacheKey = key;
     pyCache = null;
     for (const c of cands) {
-      if (probePythonExe(c).ok) { pyCache = c; break; }
+      const hit = probePythonExe(c);
+      if (hit.ok) { pyCache = hit.exe; break; }
     }
     pyCacheAt = Date.now();
     return pyCache;
@@ -3636,7 +3635,7 @@ export function apply(ctx) {
 
   /** 触发一次真实探测（会调 Python，可能连接 SW/CAD）。 */
   function runConnProbe(target) {
-    const dir = findToolsDir();
+    const dir = toolsDirCandidates()[0];
     if (!dir) return { ok: false, error: '未定位到 tools 目录' };
     const bridge = path.join(dir, 'sw_bridge.py');
     if (!fs.existsSync(bridge)) {
@@ -3690,7 +3689,7 @@ export function apply(ctx) {
   //   但**判定逻辑一行都不在 JS 里** —— 全部委托给 tools/env_check.py，
   //   保证「设置页看到的」和「Agent 跑出来的」是同一套结论（同一个事实源）。
   function runEnvCheck(args, timeoutMs) {
-    const dir = findToolsDir();
+    const dir = toolsDirCandidates()[0];
     if (!dir) return { ok: false, error: '未定位到 tools 目录' };
     const script = path.join(dir, 'env_check.py');
     if (!fs.existsSync(script)) {
@@ -3704,8 +3703,8 @@ export function apply(ctx) {
       return {
         ok: false,
         status: 'bad',
-        error: '没有找到 Python 3.6+ 解释器',
-        hint: 'PATH 里排在最前的 python 可能是 3.5 一类旧版本（不支持 f-string）。' +
+        error: '没有找到 Python 3.8+（64 位）解释器',
+        hint: 'PATH 里的 python 可能版本过低或为 32 位。' +
               '请在设置页指定 python.exe，或安装 Python 3.11/3.12 并加入 PATH。',
         python: detail,
       };
@@ -3764,7 +3763,7 @@ export function apply(ctx) {
           return send(res, 200, {
             ok: false, error: (r && r.error) || '无法生成提示词',
             python: detail,
-            hint: '请在设置页指定一个 Python 3.6+ 的 python.exe 后重试。',
+            hint: '请在设置页指定一个 Python 3.8+（64 位）的 python.exe 后重试。',
           });
         }
         r.python_used = resolvePython();
@@ -3777,14 +3776,14 @@ export function apply(ctx) {
 
   /** 读/写本机设置（交付目录、各软件路径）—— 转发 tools/settings.py。 */
   function runSettings(args) {
-    const dir = findToolsDir();
+    const dir = toolsDirCandidates()[0];
     if (!dir) return { ok: false, error: '未定位到 tools 目录' };
     const script = path.join(dir, 'settings.py');
     if (!fs.existsSync(script)) {
       return { ok: false, error: '未找到 settings.py: ' + script };
     }
     const py = resolvePython();
-    if (!py) return { ok: false, error: '没有找到 Python 3.6+ 解释器' };
+    if (!py) return { ok: false, error: '没有找到 Python 3.8+（64 位）解释器' };
     try {
       const r = spawnSync(py, [script].concat(args), {
         encoding: 'utf8', timeout: 60000, cwd: dir, windowsHide: true,
@@ -3905,7 +3904,7 @@ export function apply(ctx) {
     path: PREFIX + '/conn-probe-process-only',
     handler: async (req, res) => {
       if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'POST only' });
-      const dir = findToolsDir();
+      const dir = toolsDirCandidates()[0];
       if (!dir) return send(res, 200, { ok: false, error: '未定位到 tools 目录' });
       const bridge = path.join(dir, 'sw_bridge.py');
       if (!fs.existsSync(bridge)) {
@@ -3965,7 +3964,7 @@ export function apply(ctx) {
           ok: false,
           error: "target 必须是 'sw' | 'cad' | 'abaqus' | 'webots'" });
       }
-      const dir = findToolsDir();
+      const dir = toolsDirCandidates()[0];
       if (!dir) return send(res, 200, { ok: false, error: '未定位到 tools 目录' });
       const bridge = path.join(dir, 'sw_bridge.py');
       if (!fs.existsSync(bridge)) {
@@ -4019,7 +4018,7 @@ export function apply(ctx) {
       let logText = provided;
       if (!logText) {
         try {
-          const dir0 = findToolsDir();
+          const dir0 = toolsDirCandidates()[0];
           const py0 = resolvePython();
           if (dir0 && py0) {
             const rr = spawnSync(py0, [path.join(dir0, 'sw_bridge.py'),

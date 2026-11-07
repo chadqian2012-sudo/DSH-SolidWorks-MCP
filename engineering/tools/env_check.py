@@ -4,7 +4,7 @@ r"""env_check.py —— 工程模式【本机环境自检】（设置页「工�
 ═══════════════════════════════════════════════════════════════════════════
 【为什么需要它】
 用户在学校微机房实测到的现象，本质是同一件事：
-  工程模式默认"这台电脑什么都有"，一旦缺 Python 3.6+、缺 pywin32、
+  工程模式默认"这台电脑什么都有"，一旦缺 Python 3.8+（64 位）、缺 pywin32、
   缺 numpy，或者 SW/CAD 装在了别的盘 —— 表现就变成"某些设置静默失效"，
   而界面不会告诉用户少了什么。
 
@@ -40,9 +40,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # ── 依赖清单（单一事实源：UI 文案、提示词、自检都读它）────────────────────
 DEPS = [
-    {"id": "python", "name": "Python 解释器（≥ 3.6）",
-     "why": "sw_bridge.py / swapi.py 使用 f-string 等 3.6+ 语法；"
-            "旧版 Python 会直接 SyntaxError，界面表现为「插件解析失败 / 没有输出」。"},
+    {"id": "python", "name": "Python 解释器（≥ 3.8，64 位）",
+     "why": "按 README 的最低要求检查；工具使用 annotations、dataclasses、"
+            "subprocess.run(capture_output=True) 等较新语法与标准库接口。"},
     {"id": "pywin32", "name": "pywin32（SolidWorks / AutoCAD 的 COM 自动化）",
      "why": "没有它就完全无法驱动 SolidWorks 与 AutoCAD。",
      "kind": "module", "module": "win32com.client", "pip": "pywin32"},
@@ -75,9 +75,12 @@ for mod, shown in (("win32com.client", "pywin32"), ("numpy", "numpy"),
         out["modules"][shown] = {"ok": True, "version": None}
     except Exception as e:
         out["modules"][shown] = {"ok": False, "error": repr(e)[:200]}
-if sys.version_info < (3, 6):
+if sys.version_info < (3, 8):
     out["ok"] = False
-    out["error"] = "Python 版本过低（需要 3.6+，当前 %d.%d）" % sys.version_info[:2]
+    out["error"] = "Python 版本过低（需要 3.8+，当前 %d.%d）" % sys.version_info[:2]
+elif out["bits"] != 64:
+    out["ok"] = False
+    out["error"] = "需要 64 位 Python，当前为 32 位"
 print(json.dumps(out))
 '''
 
@@ -89,8 +92,8 @@ print(json.dumps(out))
 def _candidates():
     """候选解释器（去重保序）。
 
-    顺序刻意把 py -3 放在前面：Windows 上 py.exe 是官方启动器，
-    它会挑最新注册的 3.x，而不是 PATH 里那个 3.5.x（微机房踩的正是这个坑）。
+    优先使用本机设置、环境变量和当前解释器；其后先试 py -3，
+    避免只认 PATH 里排在前面的旧版本。
     """
     out = []
     try:
@@ -119,7 +122,7 @@ def _candidates():
 def _run_probe(exe):
     """用某个解释器跑探针脚本，返回 (ok, data, raw_error)。"""
     args = [exe]
-    if exe == "py":
+    if os.path.basename(exe).lower() in ("py", "py.exe"):
         args.append("-3")
     try:
         r = subprocess.run(args + ["-c", PROBE_CODE],
@@ -137,7 +140,7 @@ def _run_probe(exe):
         data = json.loads(stdout.splitlines()[-1])
     except Exception:
         return False, None, "探针输出不是 JSON: %s" % stdout[-300:]
-    return bool(data.get("ok")), data, (stderr[-600:] or None)
+    return bool(data.get("ok")), data, (data.get("error") or stderr[-600:] or None)
 
 
 def probe_python():
@@ -148,7 +151,7 @@ def probe_python():
         tried.append({"exe": exe, "version": (data or {}).get("version"),
                       "ok": bool(ok), "error": err})
         if ok and data:
-            return {"ok": True, "chosen": exe,
+            return {"ok": True, "chosen": data.get("executable"),
                     "version": data.get("version"),
                     "bits": data.get("bits"),
                     "executable": data.get("executable"),
@@ -156,9 +159,8 @@ def probe_python():
                     "tried": tried, "note": None}
     return {"ok": False, "chosen": None, "version": None, "modules": {},
             "tried": tried,
-            "error": "没有找到可用的 Python 3.6+ 解释器",
-            "note": ("候选全部失败。最常见原因：PATH 里排在最前的是 Python 3.5 一类的旧版本"
-                     "（3.5 不支持 f-string），而 sw_bridge.py 需要 3.6+。"
+            "error": "没有找到可用的 Python 3.8+（64 位）解释器",
+            "note": ("候选全部失败。PATH 中的 Python 可能版本过低或为 32 位。"
                      "解决：在设置页「工程环境检查」里指定 python.exe，"
                      "或安装 Python 3.11/3.12 并勾选 Add to PATH。")}
 
@@ -345,23 +347,22 @@ _PROMPT_HEAD = """【工程模式 · 本机环境修复任务】
 _PROMPT_TAIL = """
 ## 三、执行规则（请严格遵守）
 
-1. **先确认解释器，再装包。** 本机 PATH 里的 python 可能是 Python 3.5 一类旧版本
-   （3.5 不支持 f-string，而 sw_bridge.py 需要 3.6+）。装包前先跑：
+1. **先确认解释器，再装包。** 需要 Python 3.8+（64 位）。
+   安装依赖必须使用自检选中的实际解释器，避免装到另一个 Python。装包前先跑：
 ```powershell
-   python -c "import sys;print(sys.version)"
-   py -3   -c "import sys;print(sys.version)"
+   & "{python}" -c "import sys;print(sys.version);print(sys.executable);print(64 if sys.maxsize > 2**32 else 32)"
 ```
-   若默认 python 版本过低，**所有 pip 安装都必须显式用高版本解释器**：
+   **所有 pip 安装都必须使用同一个合格解释器**：
 ```powershell
-   py -3 -m pip install --upgrade pip
-   py -3 -m pip install {pip_pkgs}
+   & "{python}" -m pip install --upgrade pip
+   & "{python}" -m pip install {pip_pkgs}
 ```
 2. **装完必须回填。** 若 py -3 可用而 python 不可用，请把这件事告诉我，
    我会把它固定成本机设置（settings.py set python_exe <路径>），
    这样插件和门禁脚本用的是同一个解释器，不会再出现"装了但没生效"。
 3. **每装完一项就复验**，不要全装完再一次性验证：
 ```powershell
-   "{python}" "{tools}\\env_check.py" probe
+   & "{python}" "{tools}\\env_check.py" probe
 ```
 4. **SolidWorks / AutoCAD 路径**：若自检说找不到，先点设置页连接区的「连接」；
    仍不行就在「工程环境检查」里手动指定可执行文件。**不要全盘扫描 C: 盘根目录**。
@@ -369,7 +370,7 @@ _PROMPT_TAIL = """
    请在设置页「工程环境检查」里把交付目录设到一个明确、可写的位置。
 6. 全部处理完后，最后再跑一次完整自检，并把结论贴给我：
 ```powershell
-   "{python}" "{tools}\\env_check.py" probe
+   & "{python}" "{tools}\\env_check.py" probe
 ```
 
 ## 四、验收标准（做不到就是没修好）

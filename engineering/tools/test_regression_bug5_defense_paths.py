@@ -19,6 +19,9 @@ import json
 import shutil
 import tempfile
 import importlib.util as ilu
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
+from unittest.mock import patch
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -226,6 +229,76 @@ finally:
     dg._port_owner_check = saved3["_port_owner_check"]
     dg._read_runtime = saved3["_read_runtime"]
     dg.host_judge_room = saved3["host_judge_room"]
+
+print("\n=== 宿主签发调用按实际宿主目录认证，令牌不随跳转或代理发送 ===")
+received = []
+expected = {"token": None}
+
+
+class AuthHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("content-length", 0)))
+        token = self.headers.get("x-dsh-engineering-token")
+        received.append((self.path, token))
+        if self.path == "/redirect":
+            self.send_response(302)
+            self.send_header("Location", "/redirect-target")
+            self.end_headers()
+            return
+        ok = self.path != "/dsh-engineering-ui/defense/sign" or token == expected["token"]
+        self.send_response(200 if ok else 403)
+        self.end_headers()
+        self.wfile.write(json.dumps({"ok": ok}).encode("utf-8"))
+
+    do_GET = do_POST
+
+    def log_message(self, *args):
+        pass
+
+
+server = HTTPServer(("127.0.0.1", 0), AuthHandler)
+thread = Thread(target=server.serve_forever, daemon=True)
+thread.start()
+token_file = os.path.join(HOST_TOOLS, ".defense", "local.token")
+with open(RT, "w", encoding="utf-8") as f:
+    json.dump({"port": server.server_port, "pid": os.getpid(), "host": "example.invalid"}, f)
+try:
+    with patch.object(dg, "_find_runtime_file", return_value=RT), \
+         patch.object(dg, "_port_owner_check", return_value={"ok": True}), \
+         patch.object(dg, "_publish_workspace_root"), \
+         patch.dict(os.environ, {"DSH_ENGINEERING_TOKEN": "", "HTTP_PROXY": "http://127.0.0.1:1", "NO_PROXY": ""}):
+        base = dg._host_base()
+        check("宿主地址固定为本机，不信 runtime 中的外部域名", base == "http://127.0.0.1:%d" % server.server_port)
+        check("未配置令牌时仍能签发，且不经过环境代理", dg.request_signed_credential({})["ok"])
+        os.makedirs(os.path.join(STATE, ".defense"), exist_ok=True)
+        with open(os.path.join(STATE, ".defense", "local.token"), "w") as f:
+            f.write("wrong-workspace-token")
+        expected["token"] = "fixture-file-token"
+        for encoding in ("utf-8", "utf-8-sig"):
+            with open(token_file, "w", encoding=encoding) as f:
+                f.write("fixture-file-token\n")
+            check("签发读取宿主实际目录的文件令牌（%s）" % encoding, dg.request_signed_credential({})["ok"])
+        with patch.dict(os.environ, {"DSH_ENGINEERING_TOKEN": "fixture-env-token"}):
+            expected["token"] = "fixture-env-token"
+            check("环境令牌优先于宿主文件令牌", dg.request_signed_credential({})["ok"])
+        for contents in ("", " \n\t"):
+            with open(token_file, "w") as f:
+                f.write(contents)
+            count = len(received)
+            check("空白令牌文件在发请求前拒绝", not dg.request_signed_credential({})["ok"] and len(received) == count)
+        check("空文件不影响普通验签请求", dg._post_json(base + "/dsh-engineering-ui/defense/verify-gate", {})["ok"])
+        os.remove(token_file)
+        os.mkdir(token_file)
+        count = len(received)
+        check("不可读令牌路径在发请求前拒绝", not dg.request_signed_credential({})["ok"] and len(received) == count)
+        os.rmdir(token_file)
+        expected["token"] = None
+        check("删除文件令牌后恢复原有调用", dg.request_signed_credential({})["ok"])
+        check("跳转目标不会收到令牌", dg._post_json(base + "/redirect", {}, token="fixture-redirect-token")["ok"] and received[-1] == ("/redirect-target", None))
+finally:
+    server.shutdown()
+    server.server_close()
+    thread.join()
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\nPASS=%d FAIL=%d" % (len(PASS), len(FAIL)))

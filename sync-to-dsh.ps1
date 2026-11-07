@@ -49,6 +49,15 @@ if ($Profile.Count -gt 0) {
     }
 } else { $targets = $allProfiles }
 if ($Register -and $targets.Count -eq 0) { throw "no profile available for plugin registration" }
+$packages = @{}
+foreach ($prof in $targets) {
+    $pkg = Join-Path (Join-Path $ProfilesDir $prof) 'package.json'
+    try { $packages[$prof] = Read-DshProfileManifest $pkg }
+    catch {
+        if ($Register) { throw }
+        Write-Warning ("Cannot read " + $pkg + "; syncing only if the plugin is already installed")
+    }
+}
 
 # Runtime state: never copy these from the source workspace (session live data).
 $RuntimeNames = @(
@@ -170,25 +179,10 @@ if (-not (Test-Path $UiSrc)) {
         $nm = Join-Path (Join-Path $ProfilesDir $prof) 'node_modules'
         $dst = Join-Path $nm 'dsh-engineering-ui'
         $pkg = Join-Path (Join-Path $ProfilesDir $prof) 'package.json'
-        $declared = $false
-        $obj = $null
-        if (Test-Path $pkg) {
-            try {
-                $manifestText = [System.IO.File]::ReadAllText($pkg)
-                $obj = $manifestText | ConvertFrom-Json
-                if ($obj -isnot [pscustomobject] -or -not $manifestText.TrimStart().StartsWith('{')) {
-                    throw ("profile manifest must contain a JSON object: " + $pkg)
-                }
-                $hasDep = $obj.dependencies.PSObject.Properties.Name -contains 'dsh-engineering-ui'
-                $hasBundle = $obj.dsh.profile.bundles -contains 'dsh-engineering-ui'
-                $declared = if ($Register) { $hasDep -and $hasBundle } else { $hasDep -or $hasBundle }
-            } catch {
-                if ($Register) { throw }
-                Say ("  [WARN] cannot read profile manifest: " + $pkg) 'Yellow'
-            }
-        } elseif ($Register) {
-            throw ("profile manifest missing: " + $pkg)
-        }
+        $obj = $packages[$prof]
+        $hasDep = $obj.dependencies.PSObject.Properties.Name -contains 'dsh-engineering-ui'
+        $hasBundle = $obj.dsh.profile.bundles -contains 'dsh-engineering-ui'
+        $declared = if ($Register) { $hasDep -and $hasBundle } else { $hasDep -or $hasBundle }
         # ---- auto-register (needed when handing the preset to someone else) ----
         # A profile that does not declare the plugin will NOT load it, so the
         # engineering UI would be missing even though files were copied.
