@@ -19,6 +19,7 @@ import json
 import shutil
 import tempfile
 import importlib.util as ilu
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 from unittest.mock import patch
@@ -299,6 +300,25 @@ finally:
     server.shutdown()
     server.server_close()
     thread.join()
+
+if os.name == "nt":
+    print("\n=== 宿主归属只认本次实际连接，仍拒绝错误进程 ===")
+    with patch("socket.create_connection") as connect, patch("subprocess.run") as run:
+        probe = connect.return_value.__enter__.return_value
+        probe.getsockname.return_value = ("127.0.0.1", 45678)
+        probe.getpeername.return_value = ("127.0.0.1", 19387)
+        run.side_effect = [SimpleNamespace(stdout=value) for value in
+                           ("321\n", "DeepSeek Harness\n", "D:\\Harness\\DeepSeek Harness.exe\n")]
+        check("真实连接所属 PID、进程名和路径一致时通过", dg._port_owner_check(321, 19387)["ok"])
+        command = run.call_args_list[0].args[0][-1]
+        check("查服务端与本探针确切地址和端口，不要求 Listen", all(value in command for value in
+              ("-LocalAddress '127.0.0.1'", "-LocalPort 19387", "-RemoteAddress '127.0.0.1'",
+               "-RemotePort 45678", "-State Established")))
+        check("查完归属立即关闭探针连接", connect.return_value.__exit__.called)
+        run.side_effect = [SimpleNamespace(stdout="999\n")]
+        check("相同端口但服务端 PID 不符仍拒绝", not dg._port_owner_check(321, 19387)["ok"])
+        run.side_effect = [SimpleNamespace(stdout="")]
+        check("无法取得该连接所属进程时仍拒绝", not dg._port_owner_check(321, 19387)["ok"])
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\nPASS=%d FAIL=%d" % (len(PASS), len(FAIL)))

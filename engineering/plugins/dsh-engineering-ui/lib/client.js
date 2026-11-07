@@ -48,6 +48,7 @@ window.__ModuleLoader__.load({
     // 用户输入的令牌仅留在当前页面内存，并发请求共用一个密码输入框。
     var engSessionToken = '';
     var engTokenDialog = null;
+    var engAuthRequests = 0;
     function engRequestToken() {
       if (engTokenDialog) return engTokenDialog;
       engTokenDialog = new Promise(function (resolve) {
@@ -68,10 +69,15 @@ window.__ModuleLoader__.load({
           input.value = '';
           dialog.returnValue = '';
           dialog.remove();
-          engTokenDialog = null;
           engSessionToken = value;
           resolve(value || null);
         }, { once: true });
+        dialog.addEventListener('keydown', function (event) {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          event.stopPropagation();
+          dialog.close();
+        });
         document.body.appendChild(dialog);
         dialog.showModal();
       });
@@ -83,20 +89,26 @@ window.__ModuleLoader__.load({
       if (target.origin !== window.location.origin || target.pathname.indexOf('/dsh-engineering-ui/') !== 0) {
         return fetch(url, options);
       }
-      var token = engSessionToken;
-      function request(value) {
-        var headers = new Headers(options && options.headers);
-        if (value) headers.set('x-dsh-engineering-token', value);
-        return fetch(url, Object.assign({}, options, { headers: headers, redirect: 'error' }));
+      engAuthRequests++;
+      try {
+        var token = engSessionToken;
+        function request(value) {
+          var headers = new Headers(options && options.headers);
+          if (value) headers.set('x-dsh-engineering-token', value);
+          return fetch(url, Object.assign({}, options, { headers: headers, redirect: 'error' }));
+        }
+        var response = await request(token);
+        if (response.status !== 403) return response;
+        var error;
+        try { error = await response.clone().json(); } catch (e) { return response; }
+        if (!error || error.code !== 'ENGINEERING_TOKEN_REQUIRED') return response;
+        var next = engSessionToken !== token ? engSessionToken : await engRequestToken();
+        if (!next) return response;
+        return await request(next);
+      } finally {
+        engAuthRequests--;
+        if (engAuthRequests === 0) engTokenDialog = null;
       }
-      var response = await request(token);
-      if (response.status !== 403) return response;
-      var error;
-      try { error = await response.clone().json(); } catch (e) { return response; }
-      if (!error || error.code !== 'ENGINEERING_TOKEN_REQUIRED') return response;
-      var next = engSessionToken !== token ? engSessionToken : await engRequestToken();
-      if (!next) return response;
-      return request(next);
     }
 
     // ── 原始事件 → 显示事件（字段映射层；host 下发原始 DSH 事件）──
