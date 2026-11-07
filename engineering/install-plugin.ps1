@@ -1,4 +1,4 @@
-# DSH 工程模式预设 — 一键安装脚本
+﻿# DSH 工程模式预设 — 一键安装脚本
 #   1. 【问题2 修复】不再注入自定义权限预设（SW单行模式已移除），
 #      改为清理历史残留，权限只保留 DSH 标准三档
 #   2. 把 dsh-engineering-ui 插件复制进 profile 的 node_modules
@@ -32,28 +32,10 @@ Say "[OK] Web profile: $WebProfile" Green
 
 # 1. host-layer permission preset —— 【问题2 修复】不再注入 SW单行模式
 Say "[1/3] Checking host-layer permission presets ..." Yellow
-if (Test-Path $PatchFile) {
-  $backup = Join-Path $env:USERPROFILE (".dsh\cordis.patch.yml.bak-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
-  Copy-Item $PatchFile $backup -Force
-  $raw = Get-Content $PatchFile -Raw -Encoding UTF8
-  # 【问题2 修复】SW单行模式权限档已被整体移除。
-  #   原先的"注入 sw-single-line"逻辑一并删除 —— 权限只保留 DSH 标准三档
-  #   （read-only / workspace-write / danger-full-access）。
-  #   若历史 patch 里仍残留 sw-single-line，这里顺手清掉，避免它继续出现在权限菜单。
-  if ($raw -match "sw-single-line") {
-    $cleaned = [regex]::Replace($raw, "(?m)^[ \t]*sw-single-line:\r?\n(?:[ \t]{6,}.*\r?\n)*", "")
-    $cleaned = [regex]::Replace($cleaned, "(?m)^[ \t]*#[ ^\r\n]*SW单行模式[^\r\n]*\r?\n", "")
-    if ($cleaned -ne $raw) {
-      Set-Content -Path $PatchFile -Value $cleaned -Encoding UTF8 -NoNewline
-      Say "      removed residual sw-single-line preset (backup: $backup)" Green
-    } else {
-      Say "      sw-single-line found but could not be removed automatically; please edit manually" Yellow
-    }
-  } else {
-    Say "      no custom permission preset needed (standard three tiers only)" Gray
-  }
+if (Remove-DshLegacyPermissionPreset $PatchFile) {
+  Say "      removed legacy permission preset (changed patch backed up)" Green
 } else {
-  Say "      [X] cordis.patch.yml not found" Red
+  Say "      no legacy permission preset to migrate" Gray
 }
 
 # 2. copy plugin

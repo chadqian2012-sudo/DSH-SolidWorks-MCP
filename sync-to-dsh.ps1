@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # sync-to-dsh.ps1 - sync Engineering-Mode CODE changes into the DSH install
 # =============================================================================
 # WHY: Engineering Mode lives in two places on disk:
@@ -38,6 +38,17 @@ $Root    = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $Root 'engineering\tools\profile-manifest.ps1')
 $DshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
 $Stamp   = Get-Date -Format 'yyyyMMdd-HHmmss'
+
+$ProfilesDir = Join-Path $DshHome 'profiles'
+$allProfiles = @(Get-ChildItem -Directory -LiteralPath $ProfilesDir -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+$targets = @()
+if ($Profile.Count -gt 0) {
+    foreach ($p in $Profile) {
+        if ($allProfiles -notcontains $p) { throw ("invalid profile name: " + $p) }
+        $targets += $p
+    }
+} else { $targets = $allProfiles }
+if ($Register -and $targets.Count -eq 0) { throw "no profile available for plugin registration" }
 
 # Runtime state: never copy these from the source workspace (session live data).
 $RuntimeNames = @(
@@ -150,19 +161,11 @@ Copy-Tree $SkillsSrc $SkillsDst 'skills'
 Say ""
 Say "---- 3. dsh-engineering-ui -> profiles\*\node_modules ----" Yellow
 $UiSrc = Join-Path $Root 'engineering\plugins\dsh-engineering-ui'
-$ProfilesDir = Join-Path $DshHome 'profiles'
 if (-not (Test-Path $UiSrc)) {
     Say ("  [WARN] plugin source missing: " + $UiSrc) 'Yellow'
 } elseif (-not (Test-Path $ProfilesDir)) {
     Say ("  [WARN] profiles dir missing: " + $ProfilesDir) 'Yellow'
 } else {
-    $targets = @()
-    if ($Profile.Count -gt 0) {
-        foreach ($p in $Profile) { if (Test-Path (Join-Path $ProfilesDir $p)) { $targets += $p } }
-    } else {
-        Get-ChildItem -Directory -LiteralPath $ProfilesDir -ErrorAction SilentlyContinue |
-            ForEach-Object { $targets += $_.Name }
-    }
     foreach ($prof in $targets) {
         $nm = Join-Path (Join-Path $ProfilesDir $prof) 'node_modules'
         $dst = Join-Path $nm 'dsh-engineering-ui'
@@ -171,11 +174,20 @@ if (-not (Test-Path $UiSrc)) {
         $obj = $null
         if (Test-Path $pkg) {
             try {
-                $obj = [System.IO.File]::ReadAllText($pkg) | ConvertFrom-Json
+                $manifestText = [System.IO.File]::ReadAllText($pkg)
+                $obj = $manifestText | ConvertFrom-Json
+                if ($obj -isnot [pscustomobject] -or -not $manifestText.TrimStart().StartsWith('{')) {
+                    throw ("profile manifest must contain a JSON object: " + $pkg)
+                }
                 $hasDep = $obj.dependencies.PSObject.Properties.Name -contains 'dsh-engineering-ui'
                 $hasBundle = $obj.dsh.profile.bundles -contains 'dsh-engineering-ui'
                 $declared = if ($Register) { $hasDep -and $hasBundle } else { $hasDep -or $hasBundle }
-            } catch { Say ("  [WARN] cannot read profile manifest: " + $pkg) 'Yellow' }
+            } catch {
+                if ($Register) { throw }
+                Say ("  [WARN] cannot read profile manifest: " + $pkg) 'Yellow'
+            }
+        } elseif ($Register) {
+            throw ("profile manifest missing: " + $pkg)
         }
         # ---- auto-register (needed when handing the preset to someone else) ----
         # A profile that does not declare the plugin will NOT load it, so the
@@ -187,41 +199,37 @@ if (-not (Test-Path $UiSrc)) {
             $script:Stats.copied++
             Say ("  [register] profile '" + $prof + "' (adding dependency + bundle)") 'Green'
             if (-not $DryRun) {
-                try {
-                    Copy-Item $pkg ($pkg + '.bak-sync-' + $Stamp) -Force
-                    $script:Stats.backed++
-                    $deps = [ordered]@{}
-                    foreach ($p in $obj.dependencies.PSObject.Properties) { $deps[$p.Name] = $p.Value }
-                    if (-not $deps.Contains('dsh-engineering-ui')) {
-                        $deps['dsh-engineering-ui'] = 'file:./node_modules/dsh-engineering-ui'
-                    }
-                    $bundles = @()
-                    if ($obj.dsh -and $obj.dsh.profile -and $obj.dsh.profile.bundles) {
-                        foreach ($b in $obj.dsh.profile.bundles) { $bundles += $b }
-                    }
-                    if ($bundles -notcontains 'dsh-engineering-ui') {
-                        $idx = [array]::IndexOf($bundles, '@deepseek-ai/dsh-web-app')
-                        if ($idx -lt 0) { $bundles += 'dsh-engineering-ui' }
-                        else {
-                            $before = @($bundles[0..$idx])
-                            $after = @()
-                            if ($idx + 1 -lt $bundles.Count) {
-                                $after = @($bundles[($idx + 1)..($bundles.Count - 1)])
-                            }
-                            $bundles = $before + @('dsh-engineering-ui') + $after
-                        }
-                    }
-                    Set-DshProfilePluginEntries $obj $deps $bundles
-                    [System.IO.File]::WriteAllText($pkg,
-                        ($obj | ConvertTo-Json -Depth 100),
-                        (New-Object System.Text.UTF8Encoding($false)))
-                    $declared = $true
-                } catch {
-                    Say ("  [WARN] register failed for '" + $prof + "': " + $_.Exception.Message) 'Yellow'
+                Copy-Item $pkg ($pkg + '.bak-sync-' + $Stamp) -Force
+                $script:Stats.backed++
+                $deps = [ordered]@{}
+                foreach ($p in $obj.dependencies.PSObject.Properties) { $deps[$p.Name] = $p.Value }
+                if (-not $deps.Contains('dsh-engineering-ui')) {
+                    $deps['dsh-engineering-ui'] = 'file:./node_modules/dsh-engineering-ui'
                 }
+                $bundles = @()
+                if ($obj.dsh -and $obj.dsh.profile -and $obj.dsh.profile.bundles) {
+                    foreach ($b in $obj.dsh.profile.bundles) { $bundles += $b }
+                }
+                if ($bundles -notcontains 'dsh-engineering-ui') {
+                    $idx = [array]::IndexOf($bundles, '@deepseek-ai/dsh-web-app')
+                    if ($idx -lt 0) { $bundles += 'dsh-engineering-ui' }
+                    else {
+                        $before = @($bundles[0..$idx])
+                        $after = @()
+                        if ($idx + 1 -lt $bundles.Count) {
+                            $after = @($bundles[($idx + 1)..($bundles.Count - 1)])
+                        }
+                        $bundles = $before + @('dsh-engineering-ui') + $after
+                    }
+                }
+                Set-DshProfilePluginEntries $obj $deps $bundles
+                [System.IO.File]::WriteAllText($pkg,
+                    ($obj | ConvertTo-Json -Depth 100),
+                    (New-Object System.Text.UTF8Encoding($false)))
+                $declared = $true
             }
         }
-        if (-not $declared -and -not (Test-Path $dst)) {
+        if (-not $declared -and -not $Register -and -not (Test-Path $dst)) {
             Say ("  [skip] profile '" + $prof + "' does not declare the plugin (use -Register)") 'DarkGray'
             continue
         }

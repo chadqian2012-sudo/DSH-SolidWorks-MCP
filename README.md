@@ -457,7 +457,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Profile deskt
 
 装完完全退出并重开 DSH，在新会话里选「工程模式」，模型选 `deepseek-flash`。只使用 `dsh web` 时把 `desktop` 换成 `web`。可加 `-DryRun` 先查看改动。
 
-安装器在指定配置中登记插件，并同步共用的技能和工程脚本。已有设置、材料和建模进度会保留。旧安装若需清理已废弃的 `sw-single-line` 权限，使用同包的 `install-0.2.0.ps1`。
+安装器在指定配置中登记插件，并同步共用的技能和工程脚本。已有设置、材料和建模进度会保留。旧安装若需清理已废弃的 `sw-single-line` 权限，使用同包的 `install-0.2.0.ps1`。卸载时保留后来改过的权限和已有备份；如需恢复安装前的整份配置，请手动选择对应备份。
 
 ### 改了代码之后
 
