@@ -17,6 +17,7 @@ import win32com.client
 import swapi
 import sw_bridge
 import sw_surface
+from gate_integrity import _sha256
 
 INLET = "DSH_Duct_Inlet"
 OUTLET = "DSH_Duct_Outlet"
@@ -43,19 +44,13 @@ def positive(spec, name):
     return float(value)
 
 
-def body_count(doc, kind):
-    bodies = doc.GetBodies2(kind, False)
+def body_count(part, kind):
+    bodies = part.GetBodies2(kind, False)
     if bodies is None:
         return 0
     if isinstance(bodies, (tuple, list)):
         return len(bodies)
     raise RuntimeError("Unrecognized body query result")
-
-
-def check_bodies(doc):
-    actual = body_count(doc, 0), body_count(doc, 1)
-    if actual != (0, 1):
-        raise RuntimeError("Expected zero solid and one surface body, got %r" % (actual,))
 
 
 def xyz(point):
@@ -82,7 +77,7 @@ def assert_ellipse(segment, width, height):
 
 
 def named_feature(doc, name):
-    feature = doc.FeatureByName(name)
+    feature = win32com.client.CastTo(doc, "IPartDoc").FeatureByName(name)
     if feature is None:
         raise RuntimeError("Required feature missing: " + name)
     return feature
@@ -110,7 +105,10 @@ def sketch_model_point(sw, sk, coords):
 
 
 def inspect(sw, doc):
-    check_bodies(doc)
+    part = win32com.client.CastTo(doc, "IPartDoc")
+    counts = body_count(part, 0), body_count(part, 1)
+    if counts != (0, 1):
+        raise RuntimeError("Expected zero solid and one surface body, got %r" % (counts,))
     warning = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_BOOL, False)
     feature = win32com.client.dynamic.DumbDispatch(named_feature(doc, LOFT))
     feature._FlagAsMethod("GetErrorCode2")
@@ -145,7 +143,7 @@ def inspect(sw, doc):
     if length <= 0 or parallel < 0.999999 or dist(lateral, (0.0, 0.0, 0.0)) > 1e-5:
         raise RuntimeError("Section planes are not parallel and coaxial")
     # Each sampled profile point must lie on a distinct open boundary edge.
-    bodies = doc.GetBodies2(1, False)
+    bodies = part.GetBodies2(1, False)
     edges = prop(bodies[0], "GetEdges")
     if not isinstance(edges, (tuple, list)):
         raise RuntimeError("Unable to enumerate surface edges")
@@ -194,18 +192,18 @@ def save(doc, path):
         raise RuntimeError("Document is still modified after save")
 
 
-def rename_sketch(sw, doc, original, new):
+def rename_feature(sw, doc, original, new, kinds):
     feature = prop(doc, "FirstFeature")
     while feature is not None:
         kind = prop(feature, "GetTypeName2")
-        if kind in ("ProfileFeature", "Sketch"):
+        if kind in kinds:
             candidate = prop(feature, "GetSpecificFeature2")
             if candidate is not None and int(sw.IsSame(original, candidate)) == 1:
                 feature.Name = new
                 named_feature(doc, new)
-                return
+                return feature
         feature = prop(feature, "GetNextFeature")
-    raise RuntimeError("Cannot match created sketch to a feature")
+    raise RuntimeError("Cannot match created object to its feature: " + new)
 
 
 def create(sw, spec, path):
@@ -219,9 +217,8 @@ def create(sw, spec, path):
         raise RuntimeError("Target document is already open")
     if os.path.exists(path):
         raise FileExistsError("Output already exists")
-    temp_dir = tempfile.mkdtemp(prefix=".dsh_duct_", dir=os.path.dirname(path))
-    # Unique title avoids colliding with an unrelated open document's title.
-    temp_path = os.path.join(temp_dir, os.path.basename(temp_dir) + ".SLDPRT")
+    if not os.path.isdir(os.path.dirname(path)):
+        raise FileNotFoundError("Output directory does not exist")
     template = swapi.get_part_template(sw)
     if not template:
         raise RuntimeError("No part template")
@@ -233,17 +230,18 @@ def create(sw, spec, path):
     active_inlet = m.skm.ActiveSketch
     m.circle(0, 0, inlet / 2)
     m.end_sketch(merge=False)
-    rename_sketch(sw, doc, active_inlet, INLET)
+    rename_feature(sw, doc, active_inlet, INLET, ("ProfileFeature", "Sketch"))
     plane = m._make_offset_plane("Front Plane", length)
     if not plane.get("ok") or plane.get("feature") is None:
         raise RuntimeError("Offset plane failed: %r" % (plane,))
-    plane["feature"].Name = PLANE
-    m.begin_sketch_on_feature(plane["feature"], label=PLANE)
+    # InsertRefPlane returns IRefPlane; naming and selection belong to IFeature.
+    plane_feature = rename_feature(sw, doc, plane["feature"], PLANE, ("RefPlane",))
+    m.begin_sketch_on_feature(plane_feature, label=PLANE)
     active_outlet = m.skm.ActiveSketch
     segment = m.ellipse(0, 0, width, height)
     assert_ellipse(segment, width, height)
     m.end_sketch(merge=False)
-    rename_sketch(sw, doc, active_outlet, OUTLET)
+    rename_feature(sw, doc, active_outlet, OUTLET, ("ProfileFeature", "Sketch"))
     loft = m.loft_surface([INLET, OUTLET])
     if loft is None:
         raise RuntimeError("Surface loft failed")
@@ -252,6 +250,9 @@ def create(sw, spec, path):
     actual = inspect(sw, doc)
     if any(abs(a - b) > 0.01 for a, b in zip(actual, (inlet, width, height, length))):
         raise RuntimeError("Created section dimensions differ: %r" % (actual,))
+    # Unique title avoids colliding with an unrelated open document's title.
+    temp_dir = tempfile.mkdtemp(prefix=".dsh_duct_", dir=os.path.dirname(path))
+    temp_path = os.path.join(temp_dir, os.path.basename(temp_dir) + ".SLDPRT")
     save(doc, temp_path)
     same_path(doc, temp_path)
     if bool(prop(doc, "GetSaveFlag")):
@@ -372,3 +373,7 @@ def main(sw):
 
 
 __RESULT__ = main(sw)
+__RESULT__["artifacts"] = [__RESULT__["path"]]
+__RESULT__["geometry_sha256"] = _sha256(__RESULT__["path"])
+if __RESULT__["geometry_sha256"] is None:
+    raise RuntimeError("Cannot read the saved geometry for verification")

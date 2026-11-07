@@ -637,7 +637,54 @@ check("端到端 C：sys.exit(0) 判为成功",
 
 
 # ══════════════════════════════════════════════════════════════════════
-# ④ 自检：本次改动的关键常量 / 结构仍在位（防回归）
+section("风管纯曲面交付与实体材料检查")
+from unittest.mock import patch
+from gate_integrity import _sha256
+import swapi
+
+_duct_path = _p("duct.SLDPRT")
+_duct_script = os.path.join(TOOLS, "examples", "build_transition_duct.py")
+for _label, _solid, _changed, _expected in (
+        ("保存的单曲面", False, False, True),
+        ("曲面混有实体", True, False, False),
+        ("验模后文件变动", False, True, False)):
+    with open(_duct_path, "wb") as _f:
+        _f.write(b"offline duct fixture")
+    _digest = _sha256(_duct_path)
+    if _changed:
+        with open(_duct_path, "wb") as _f:
+            _f.write(b"changed after script validation")
+    _duct_loft = types.SimpleNamespace(GetTypeName2=lambda: "BlendRefSurface")
+    _duct_part = types.SimpleNamespace(
+        GetBodies2=lambda kind, visible: [object()] if kind == 1 or _solid else None,
+        FeatureByName=lambda name: _duct_loft if name == "DSH_Duct_Surface" else None)
+    # IModelDoc2 has neither GetBodies2 nor FeatureByName: the cast is required.
+    _duct_model = types.SimpleNamespace(GetPathName=lambda: _duct_path,
+        GetSaveFlag=lambda: False, GetType=lambda: 1, GetConfigurationCount=lambda: 1)
+    _duct_sw = types.SimpleNamespace(GetOpenDocumentByName=lambda path: _duct_model)
+    _duct_payload = {"ok": True, "error": "", "script_name": "__main__",
+        "script_result": {"ok": True, "mode": "create", "path": _duct_path,
+                          "artifacts": [_duct_path], "geometry_sha256": _digest}}
+
+    def _duct_cast(obj, interface):
+        assert obj is (_duct_loft if interface == "IFeature" else _duct_model)
+        return {"IModelDoc2": _duct_model, "IPartDoc": _duct_part, "IFeature": _duct_loft}[interface]
+
+    with patch.object(sw_bridge.subprocess, "run", return_value=_FakeProc(json.dumps(_duct_payload), "", 0)), \
+         patch.object(sw_bridge, "_task_work_dir", return_value=None), \
+         patch.object(sys.modules["win32com.client"], "CastTo", side_effect=_duct_cast, create=True), \
+         patch.object(swapi, "from_active", side_effect=RuntimeError("offline screenshot disabled")), \
+         patch.dict(os.environ, {"DSH_DEFENSE_BYPASS": ""}):
+        _duct_result = sw_bridge.cmd_run(_duct_sw, _duct_script, [], room=None)
+    _reports = _duct_result.get("material_defense") or []
+    if _expected:
+        _material_correct = bool(_reports) and _reports[0].get("applicable") is False and _reports[0].get("ok") is None
+    else:
+        _material_correct = _duct_result.get("defense_blocked") == "MATERIAL"
+    check("风管 " + _label, _duct_result.get("ok") is _expected and _material_correct
+          and not _duct_result.get("defense_bypassed"), _duct_result.get("error"))
+
+
 # ══════════════════════════════════════════════════════════════════════
 section("④ 结构与常量自检（防后续回归）")
 

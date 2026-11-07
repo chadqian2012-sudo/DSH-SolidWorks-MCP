@@ -36,6 +36,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $Root 'engineering\tools\profile-manifest.ps1')
 
 function Say($m, $c = 'Gray') { Write-Host $m -ForegroundColor $c }
 function Rule($t) {
@@ -146,16 +147,11 @@ foreach ($prof in $targets) {
         }
     }
 
-    $out = [ordered]@{}
-    $out['name']    = $obj.name
-    $out['private'] = $true
-    if ($obj.pnpm) { $out['pnpm'] = $obj.pnpm }
-    $out['dependencies'] = $deps
-    $out['dsh'] = [ordered]@{ profile = [ordered]@{ bundles = $bundles } }
+    Set-DshProfilePluginEntries $obj $deps $bundles
 
     Copy-Item $pkg ($pkg + '.bak-sync-' + $Stamp) -Force
     [System.IO.File]::WriteAllText($pkg,
-        ($out | ConvertTo-Json -Depth 12),
+        ($obj | ConvertTo-Json -Depth 100),
         (New-Object System.Text.UTF8Encoding($false)))
     Say ("  [OK] " + $prof + " : registered") Green
     $regCount++
@@ -172,6 +168,13 @@ $syncArgs = @()
 if ($DryRun) { $syncArgs += '-DryRun' }
 if ($Profile.Count -gt 0) { $syncArgs += @('-Profile') + $Profile }
 & powershell -NoProfile -ExecutionPolicy Bypass -File $Sync @syncArgs
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+if ($DryRun) {
+    Rule "dry run complete"
+    Say "  No files were written. Run without -DryRun to install."
+    exit 0
+}
 
 # ---- 3. verify --------------------------------------------------------------
 Rule "verify"

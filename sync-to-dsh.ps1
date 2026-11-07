@@ -35,6 +35,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $Root    = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $Root 'engineering\tools\profile-manifest.ps1')
 $DshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE '.dsh' }
 $Stamp   = Get-Date -Format 'yyyyMMdd-HHmmss'
 
@@ -87,7 +88,7 @@ function Should-Skip([string]$Name) {
 
 function Copy-Tree([string]$Src, [string]$Dst, [string]$Label) {
     if (-not (Test-Path $Src)) { Say ("  [WARN] source missing: " + $Src) 'Yellow'; return }
-    if (-not (Test-Path $Dst)) { New-Item -ItemType Directory -Path $Dst -Force | Out-Null }
+    if (-not $DryRun -and -not (Test-Path $Dst)) { New-Item -ItemType Directory -Path $Dst -Force | Out-Null }
     $files = Get-ChildItem -Path $Src -Recurse -File -Force -ErrorAction SilentlyContinue
     $n = 0
     foreach ($f in $files) {
@@ -99,7 +100,7 @@ function Copy-Tree([string]$Src, [string]$Dst, [string]$Label) {
         if (Should-Skip $f.Name) { $script:Stats.skipped++; continue }
         $target = Join-Path $Dst $rel
         $tdir = Split-Path $target -Parent
-        if (-not (Test-Path $tdir)) { New-Item -ItemType Directory -Path $tdir -Force | Out-Null }
+        if (-not $DryRun -and -not (Test-Path $tdir)) { New-Item -ItemType Directory -Path $tdir -Force | Out-Null }
         if (Test-Path $target) {
             $same = $false
             try {
@@ -167,11 +168,14 @@ if (-not (Test-Path $UiSrc)) {
         $dst = Join-Path $nm 'dsh-engineering-ui'
         $pkg = Join-Path (Join-Path $ProfilesDir $prof) 'package.json'
         $declared = $false
+        $obj = $null
         if (Test-Path $pkg) {
             try {
-                $txt = [System.IO.File]::ReadAllText($pkg)
-                if ($txt -match 'dsh-engineering-ui') { $declared = $true }
-            } catch { $declared = $false }
+                $obj = [System.IO.File]::ReadAllText($pkg) | ConvertFrom-Json
+                $hasDep = $obj.dependencies.PSObject.Properties.Name -contains 'dsh-engineering-ui'
+                $hasBundle = $obj.dsh.profile.bundles -contains 'dsh-engineering-ui'
+                $declared = if ($Register) { $hasDep -and $hasBundle } else { $hasDep -or $hasBundle }
+            } catch { Say ("  [WARN] cannot read profile manifest: " + $pkg) 'Yellow' }
         }
         # ---- auto-register (needed when handing the preset to someone else) ----
         # A profile that does not declare the plugin will NOT load it, so the
@@ -179,15 +183,13 @@ if (-not (Test-Path $UiSrc)) {
         # This was a real delivery gap: the 'web' profile did not declare it,
         # while install-plugin.ps1 targeted only 'web'.
         # -Register makes sync install + declare the plugin in every profile.
-        if (-not $declared -and $Register) {
+        if (-not $declared -and $Register -and $null -ne $obj) {
             $script:Stats.copied++
             Say ("  [register] profile '" + $prof + "' (adding dependency + bundle)") 'Green'
             if (-not $DryRun) {
                 try {
                     Copy-Item $pkg ($pkg + '.bak-sync-' + $Stamp) -Force
                     $script:Stats.backed++
-                    $raw = [System.IO.File]::ReadAllText($pkg)
-                    $obj = $raw | ConvertFrom-Json
                     $deps = [ordered]@{}
                     foreach ($p in $obj.dependencies.PSObject.Properties) { $deps[$p.Name] = $p.Value }
                     if (-not $deps.Contains('dsh-engineering-ui')) {
@@ -209,14 +211,9 @@ if (-not (Test-Path $UiSrc)) {
                             $bundles = $before + @('dsh-engineering-ui') + $after
                         }
                     }
-                    $out = [ordered]@{}
-                    $out['name'] = $obj.name
-                    $out['private'] = $true
-                    if ($obj.pnpm) { $out['pnpm'] = $obj.pnpm }
-                    $out['dependencies'] = $deps
-                    $out['dsh'] = [ordered]@{ profile = [ordered]@{ bundles = $bundles } }
+                    Set-DshProfilePluginEntries $obj $deps $bundles
                     [System.IO.File]::WriteAllText($pkg,
-                        ($out | ConvertTo-Json -Depth 12),
+                        ($obj | ConvertTo-Json -Depth 100),
                         (New-Object System.Text.UTF8Encoding($false)))
                     $declared = $true
                 } catch {

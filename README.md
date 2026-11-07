@@ -1,8 +1,14 @@
 # 🔧 DSH 工程模式 · Engineering Mode
 
-本分支为 DeepSeek V4.1 Flash 增加图纸输入和原生放样曲面。使用工程模式时可直接给它 PDF、图片、DXF 或 DWG；模型从视图和标注提取外形及尺寸，关键尺寸不清会集中询问。风管支持两端开口、同轴平行的圆转椭圆截面，可继续改原出口宽度。更多零件沿用上游建模工具。[插件调用方法和参数](engineering/skills/mode-selection/SKILL.md#图纸--整件零件deepseek-v41-flash)
+本分支让 DeepSeek V4.1 Flash 在工程模式下读取图纸，调用 SOLIDWORKS 建模。PDF 和图片按页查看。DXF 可读原图元和尺寸标注。DWG 先转为 DXF，转换结果无法解析时请从原 CAD 导出标准 DXF 或 PDF。模型会集中询问影响建模的缺失尺寸。[插件调用方法和参数](engineering/skills/mode-selection/SKILL.md#图纸--整件零件deepseek-v41-flash)
 
-图纸工具的 Python 依赖为 `Pillow ezdxf matplotlib`。PDF 需 Poppler；DWG 需 [LibreDWG](https://www.gnu.org/software/libredwg/) 的 `dwg2dxf`。建模需 Windows 桌面版 SOLIDWORKS、零件模板和同一 Python 中的 `pywin32`。在插件中选择支持图像输入的 `deepseek-flash`；保持用户现有的模型和密钥配置。放样逻辑移植自 [Auto-SolidWorks 的 MIT 实现](https://github.com/qdaia/Auto-SolidWorks/blob/1bf68f425a1b541f597beaa1842cf2bc1bb9feb8/src/CadModeling.Executor.SolidWorks/NativeFeatures.cs#L133)。此扩展处于预发布阶段，尚未完成 Flash 与 SOLIDWORKS 的联合真机验证。
+风管命令创建两端开口、同轴平行的圆转椭圆放样曲面。续改时，在原草图上调整椭圆出口宽度，并复核入口直径、出口高度和风管长度。这个命令用于零厚度几何，不提供材料或强度结论。其他零件继续使用原有草图、拉伸和切除工具。[放样参考实现（MIT）](https://github.com/qdaia/Auto-SolidWorks/blob/1bf68f425a1b541f597beaa1842cf2bc1bb9feb8/src/CadModeling.Executor.SolidWorks/NativeFeatures.cs#L133)
+
+图纸工具需要 `Pillow ezdxf matplotlib`。PDF 需要 Poppler，DWG 需要 LibreDWG 的 `dwg2dxf`。建模还需 Windows 桌面版 SOLIDWORKS、零件模板及同一 Python 环境里的 `pywin32`。模型选 `deepseek-flash`。[DeepSeek 视觉输入说明](https://api-docs.deepseek.com/guides/vision/)
+
+**验证范围**　本机在 Harness Desktop 0.2.1-rc.5 上加载了工程插件，并把测试图原样传到了模拟模型服务。LibreDWG 官方样图及九张随包机械图都生成了可见预览。这九张机械图的转换结果没有原生尺寸标注实体。带尺寸的独立 DXF 样本另行核对了显示值和覆盖文字。本版尚未用线上 Flash 识读尺寸，也没有在 SOLIDWORKS 中建成并重开风管。
+
+Windows 上若 `pwsh` 在执行第一条命令前报告 `grantWrite ... Win32 5`，请把 Harness 当前任务目录设在本人有完全控制权的位置。本机保留 D 盘的 Python 和插件，在普通用户临时目录下新建任务文件夹，用标准工作区权限跑通了读图和桥接调用。命令能写入该任务目录，向目录外写入会被拒绝。
 
 <img width="1710" height="1189" alt="四工位自动化精密加工转台 — 交付完成" src="assets/screenshots/delivery-4station-turntable.png" />
 

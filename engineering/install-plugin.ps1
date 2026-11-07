@@ -8,6 +8,7 @@
 $ErrorActionPreference = "Stop"
 
 $PresetRoot = Split-Path $MyInvocation.MyCommand.Path
+. (Join-Path $PresetRoot 'tools\profile-manifest.ps1')
 $PluginSrc  = Join-Path $PresetRoot "plugins\dsh-engineering-ui"
 $DshHome    = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE ".dsh" }
 $WebProfile = Join-Path $DshHome "profiles\web"
@@ -83,13 +84,10 @@ if ($bundles -notcontains "dsh-engineering-ui") {
     $bundles = $before + @("dsh-engineering-ui") + $after
   }
 }
-$out = [ordered]@{}
-$out["name"] = $pkg.name
-$out["private"] = $true
-if ($pkg.pnpm) { $out["pnpm"] = $pkg.pnpm }
-$out["dependencies"] = $deps
-$out["dsh"] = [ordered]@{ profile = [ordered]@{ bundles = $bundles } }
-Set-Content -Path $ProfilePkg -Value ($out | ConvertTo-Json -Depth 12) -Encoding UTF8
+Set-DshProfilePluginEntries $pkg $deps $bundles
+[System.IO.File]::WriteAllText($ProfilePkg,
+    (($pkg | ConvertTo-Json -Depth 100) + [Environment]::NewLine),
+    (New-Object System.Text.UTF8Encoding($false)))
 Say "      registered (dependencies + dsh.profile.bundles)" Green
 
 Say "================================================" Cyan

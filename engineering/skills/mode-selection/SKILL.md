@@ -57,19 +57,21 @@ Must output BEFORE any design work:
 
 ### 图纸 → 整件零件（DeepSeek V4.1 Flash）
 
-收到 PDF、图片、DXF、DWG 时使用模式 3。当前模型应具有图像输入能力（官方模型名 `deepseek-flash`）。
+收到 PDF、图片、DXF、DWG 时使用模式 3。先确认当前会话的实际模型 ID 为 `deepseek-flash`，且该模型路由声明支持图像输入；不能只看显示名。命令通过 DSH 的 `pwsh` 工具执行。先按下文定位工程模式根目录，再确认 Python 解释器和依赖；不要默认 PATH 里的 `python` 就是已配置的解释器。
 
-1. 用 `python "<工程模式根目录>\tools\drawing_input.py" "<原图>" --output-dir "<本次新目录>"` 取得页图、文字或 CAD 图元。PDF 可加 `--page N` 精读指定页。图像需用原生 `read_image` 查看实际像素；命令只返回路径。DXF/DWG 先读图元和标注摘要，按需查看 `entity_evidence`。DWG 需要 LibreDWG 的 `dwg2dxf`，可用 `--dwg2dxf` 指定。读 DXF 需要 ezdxf，读 PDF 需要 Poppler。
+DSH 0.2.1-rc.5 默认接收单图不超过 20 MiB、最长边不超过 8192 像素；附件保存时会把总像素限制到 2048×2048，模型请求还可能进一步缩放。检查工具返回的缩放说明和请求预览尺寸。标注看不清时索要局部清晰图或读取矢量标注，不能把接收上限当成模型实际看到的分辨率。
+
+1. 用 `& "<已验证的 python.exe 绝对路径>" "<工程模式根目录>\tools\drawing_input.py" "<原图>" --output-dir "<本次新目录>"` 取得页图、文字或 CAD 图元。PDF 可加 `--page N` 精读指定页。再对所需的 `images[].path` 调用原生 `read_image`，参数为 `file_path`；只有工具成功返回图像附件，才算图像进入模型输入。准备脚本返回路径不等于看过图。DXF/DWG 先读图元和标注摘要，按需查看 `entity_evidence` 和预览。DWG 需要 LibreDWG 的 `dwg2dxf`，可用 `--dwg2dxf` 指定。读 DXF 需要 ezdxf，读 PDF 需要 Poppler。`pwsh` 或 `read_image` 报错时先处理环境、权限或模型能力问题。
 2. 对照视图和尺寸线，提取轮廓、基准、孔位、单位、尺寸和对应标注位置。先保留已确定项。有冲突、看不清、单位或投影关系不明时，一次问齐影响形状的项目。禁止按图像比例补数。尺寸表不能代替轮廓检查；截面之间的同轴、偏移或倾斜也必须有依据。
 3. 普通零件把已确定的信息转成草图、拉伸、切除的有序操作，复用原有 `solidworks-bridge`；只有当图纸和工具足以表达整件时才执行。两端开口、同轴、平行截面的圆转椭圆风管可直接用下列操作，免写 COM 脚本。
 4. 将参数写进一个 UTF-8 JSON 文件。新建用 `mode="create"`、`output_path`（绝对 .SLDPRT 路径）、`inlet_diameter_mm`、`outlet_width_mm`、`outlet_height_mm`、`length_mm`。椭圆尺寸是完整轴长，水平轴为长轴。续改出口宽只需 `mode="resize"`、原路径和新 `outlet_width_mm`。同一个已保存且没有手工待保存改动的活动零件可继续使用。偏心、壁厚和法兰超出这个风管命令的范围。
 
    ```powershell
    $env:DSH_DUCT_SPEC = "<参数 JSON 的绝对路径>"
-   python "<工程模式根目录>\tools\sw_bridge.py" run "<工程模式根目录>\tools\examples\build_transition_duct.py"
+   & "<已验证的 python.exe 绝对路径>" "<工程模式根目录>\tools\sw_bridge.py" run "<工程模式根目录>\tools\examples\build_transition_duct.py"
    ```
 
-5. 按桥接返回的建模结果、尺寸和产物路径汇报。准备页图、识别尺寸、完成 CAD 建模是三个不同的结果。
+5. 检查桥接 JSON 的 `ok`、连接状态和错误信息，再按实际建模结果、尺寸和产物路径汇报。命令退出码为 0 也可能返回 `ok:false`；连接失败或没有产物时不得报告建模完成。准备页图、识别尺寸、完成 CAD 建模是三个不同的结果。
 
 ## 🔴 Mode 2 强制门禁流程（用命令行脚本，不是 DSH 工具！）
 
