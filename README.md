@@ -1,4 +1,9 @@
 # 🔧 DSH 工程模式 · Engineering Mode
+
+本分支为 DeepSeek V4.1 Flash 增加图纸输入和原生放样曲面。使用工程模式时可直接给它 PDF、图片、DXF 或 DWG；模型从视图和标注提取外形及尺寸，关键尺寸不清会集中询问。风管支持两端开口、同轴平行的圆转椭圆截面，可继续改原出口宽度。更多零件沿用上游建模工具。[插件调用方法和参数](engineering/skills/mode-selection/SKILL.md#图纸--整件零件deepseek-v41-flash)
+
+图纸工具的 Python 依赖为 `Pillow ezdxf matplotlib`。PDF 需 Poppler；DWG 需 [LibreDWG](https://www.gnu.org/software/libredwg/) 的 `dwg2dxf`。建模需 Windows 桌面版 SOLIDWORKS、零件模板和同一 Python 中的 `pywin32`。在插件中选择支持图像输入的 `deepseek-flash`；保持用户现有的模型和密钥配置。放样逻辑移植自 [Auto-SolidWorks 的 MIT 实现](https://github.com/qdaia/Auto-SolidWorks/blob/1bf68f425a1b541f597beaa1842cf2bc1bb9feb8/src/CadModeling.Executor.SolidWorks/NativeFeatures.cs#L133)。此扩展处于预发布阶段，尚未完成 Flash 与 SOLIDWORKS 的联合真机验证。
+
 <img width="1710" height="1189" alt="四工位自动化精密加工转台 — 交付完成" src="assets/screenshots/delivery-4station-turntable.png" />
 
 > **面向 CAD / SolidWorks 机械设计的 DeepSeek Harness Agent 预设。**
