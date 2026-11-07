@@ -583,6 +583,16 @@ import json
 from pathlib import Path
 import defense_gate
 
+import subprocess
+_cold_check = subprocess.run([sys.executable, "-S", "-c",
+    "import sys\nsys.path.insert(0, sys.argv[1])\n"
+    "from physics.material_db import material_names_match\n"
+    "assert material_names_match('Q235（碳素结构钢）', 'Q235')\n"
+    "assert not material_names_match('AISI 1020', 'Q235')\n"
+    "assert 'pythoncom' not in sys.modules\n", HERE], capture_output=True, text=True)
+check("纯Python冷启动识别外部国标中文别名且不拉入COM",
+      _cold_check.returncode == 0, _cold_check.stderr)
+
 class _TupleReadbackDoc(FakeMaterialDoc):
     def GetMaterialPropertyName2(self, cfg, database):
         self.calls.append((cfg, database))

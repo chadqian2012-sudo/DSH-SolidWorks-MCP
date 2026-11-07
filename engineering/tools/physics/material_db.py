@@ -514,6 +514,13 @@ def material_names_match(actual, requested):
             names.setdefault(_norm_key(alias), _norm_key(canonical))
     for canonical in COMMON_MATERIALS:
         names[_norm_key(canonical)] = _norm_key(canonical)
+    for material_id, info in GB_MATERIALS.items():
+        aliases = [material_id, info.get("name"), info.get("name_cn"), *(info.get("aliases") or [])]
+        identity = next((names[_norm_key(alias)] for alias in aliases
+                         if _norm_key(alias) in names), _norm_key(material_id))
+        for alias in aliases:
+            if alias:
+                names.setdefault(_norm_key(alias), identity)
     identities = [{(material_standard_of(name), names[_norm_key(name)])
                    for name in variants if _norm_key(name) in names}
                   for variants in (av, rv)]
