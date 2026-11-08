@@ -17,7 +17,7 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -149,6 +149,8 @@ function withTempHome(prefix, fn, rootAgents) {
   const oldHome = process.env.DSH_HOME;
   const temp = mkdtempSync(path.join(tmpdir(), prefix));
   mkdirSync(path.join(temp, '.agent-presets', 'engineering', 'tools'), { recursive: true });
+  writeFileSync(path.join(temp, '.agent-presets', 'engineering', 'tools', 'workflow_state.json'),
+    JSON.stringify({ step: 'design' }));
   process.env.DSH_HOME = temp;
   const h = harness(rootAgents);
   try {

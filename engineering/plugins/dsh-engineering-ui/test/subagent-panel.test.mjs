@@ -17,6 +17,16 @@ const PLUGIN = process.argv[2] || path.join(here, '..');
 // ── 最小 React shim：记录元素树，提供组件里用到的 hooks ────────────────
 const stateSlots = [];
 let cursor = 0;
+let effectCollector = null;
+const guideMemory = new Map();
+const guideEvents = new Map();
+const guideDocument = {
+  addEventListener(name, callback) {
+    if (!guideEvents.has(name)) guideEvents.set(name, new Set());
+    guideEvents.get(name).add(callback);
+  },
+  removeEventListener(name, callback) { guideEvents.get(name)?.delete(callback); },
+};
 function resetHooks() { cursor = 0; stateSlots.length = 0; }
 const react = {
   createElement(type, props, ...children) {
@@ -29,13 +39,15 @@ const react = {
     return [stateSlots[i], (v) => { stateSlots[i] = typeof v === 'function' ? v(stateSlots[i]) : v; }];
   },
   useRef(v) { const i = cursor++; if (stateSlots.length <= i) stateSlots[i] = { current: v }; return stateSlots[i]; },
-  useEffect() { cursor++; },   // 测试中不执行副作用（不拉日志）
+  useEffect(callback) { cursor++; if (effectCollector) effectCollector.push(callback); },
   useMemo(f) { return f(); },
 };
 
 let client;
 vm.runInNewContext(readFileSync(path.join(PLUGIN, 'lib', 'client.js'), 'utf8'), {
   window: { __ModuleLoader__: { load(def) { client = def.factory(() => react); } } },
+  document: guideDocument,
+  localStorage: { getItem: key => guideMemory.get(key) ?? null, setItem: (key, value) => guideMemory.set(key, value) },
   console, setTimeout, clearTimeout, setInterval, clearInterval,
 });
 
@@ -489,6 +501,64 @@ check('★ 弹窗渲染出「如何使用」页内容',
     catch (e) { outU.text = 'ERR:' + e.message; }
     return outU.text.includes('示例任务') && outU.text.includes('预期产出');
   })());
+
+// Installation guidance shares the existing dialog and all of its close paths.
+const guideSeenKey = 'dsh-engineering-ui/usage-guide-seen';
+
+effectCollector = [];
+resetHooks();
+const modalGuide = client.EngGuideDialog({ initialPage: 'usage', onClose: () => {} });
+let shown = 0, closed = 0;
+modalGuide.props.ref.current = { showModal() { shown++; }, close() { closed++; } };
+const modalCleanups = effectCollector.map(run => run()).filter(run => typeof run === 'function');
+check('手册使用原生模态对话框进入浏览器顶层', modalGuide.type === 'dialog' && shown === 1);
+modalCleanups.forEach(run => run());
+check('卸载手册释放原生模态状态', closed === 1);
+guideMemory.clear();
+resetHooks();
+let initialGuide = client.EngPresetGuideHost();
+check('首次加载自动打开已有使用手册', initialGuide?.type === client.EngGuideDialog
+  && initialGuide.props.initialPage === 'usage');
+cursor = 0;
+check('重复渲染保持同一个手册状态', client.EngPresetGuideHost().props.initialPage === 'usage');
+initialGuide.props.onClose();
+cursor = 0;
+check('关闭手册保存已读并移除弹窗', guideMemory.get(guideSeenKey) === '1'
+  && client.EngPresetGuideHost() === null);
+resetHooks();
+check('已读后重新挂载不自动弹出', client.EngPresetGuideHost() === null);
+
+effectCollector = [];
+guideEvents.clear();
+resetHooks();
+client.EngPresetGuideHost();
+effectCollector.forEach(run => run());
+for (const listener of guideEvents.get('eng-guide-open') || []) listener({ detail: { page: 'usage' } });
+cursor = 0;
+check('已读后仍可从已有入口打开使用手册', client.EngPresetGuideHost()?.props.initialPage === 'usage');
+
+for (const closeVia of ['button', 'backdrop', 'escape']) {
+  guideMemory.clear();
+  guideEvents.clear();
+  effectCollector = [];
+  resetHooks();
+  const host = client.EngPresetGuideHost();
+  resetHooks();
+  const dialog = client.EngGuideDialog(host.props);
+  effectCollector.forEach(run => run());
+  if (closeVia === 'button') {
+    flatten(dialog).nodes.find(node => node.props?.className === 'eng-guide-x').props.onClick();
+  } else if (closeVia === 'backdrop') {
+    const mask = {};
+    dialog.props.onClick({ target: mask, currentTarget: mask });
+  } else {
+    let prevented = false;
+    dialog.props.onCancel({ preventDefault() { prevented = true; } });
+    check('Escape只取消当前原生手册弹窗', prevented);
+  }
+  check(closeVia + ' 关闭同样保存已读', guideMemory.get(guideSeenKey) === '1');
+}
+effectCollector = null;
 
 console.log(`\n===== 结果：${pass} 通过 / ${fail} 失败 =====`);
 process.exit(fail === 0 ? 0 : 1);

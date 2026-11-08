@@ -677,8 +677,8 @@ window.__ModuleLoader__.load({
         + 'color:var(--dsw-alias-label-primary,#1f2328)}',
       '.eng-help-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#3b82f6);outline-offset:1px}',
       // ── 【需求1】说明弹窗（两 Tab，外观照抄官方 PresetGuideDialog）────────
-      '.eng-guide-mask{background:rgba(0,0,0,.45);bottom:0;left:0;position:fixed;right:0;top:0;'
-        + 'z-index:2147483000;display:flex;align-items:center;justify-content:center;padding:24px}',
+      '.eng-guide-mask{background:rgba(0,0,0,.45);border:0;box-sizing:border-box;bottom:0;left:0;position:fixed;right:0;top:0;'
+        + 'margin:0;max-height:none;max-width:none;width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:24px}',
       '.eng-guide-dlg{background:var(--dsw-alias-bg-base,#fff);border-radius:12px;'
         + 'box-shadow:0 12px 48px rgba(0,0,0,.28);display:flex;flex-direction:column;'
         + 'max-height:min(78vh,720px);max-width:640px;width:100%;overflow:hidden}',
@@ -1546,6 +1546,7 @@ window.__ModuleLoader__.load({
      */
     var _presetGuideState = { mounted: false, observer: null };
     var ENG_GUIDE_EVT = 'eng-guide-open';
+    var ENG_GUIDE_SEEN = 'dsh-engineering-ui/usage-guide-seen';
 
     function openPresetGuide(page) {
       if (typeof document === 'undefined') return;
@@ -1564,7 +1565,10 @@ window.__ModuleLoader__.load({
 
     /** 常驻在 shell.overlay 的弹窗宿主：监听事件并按需渲染弹窗。 */
     function EngPresetGuideHost() {
-      var _s = useState(null);
+      var _s = useState(function () {
+        try { if (localStorage.getItem(ENG_GUIDE_SEEN) === '1') return null; } catch (e) {}
+        return { page: 'usage' };
+      });
       var guide = _s[0], setGuide = _s[1];
       useEffect(function () {
         function onOpen(e) {
@@ -1579,7 +1583,10 @@ window.__ModuleLoader__.load({
       if (!guide) return null;
       return h(EngGuideDialog, {
         initialPage: guide.page,
-        onClose: function () { setGuide(null); }
+        onClose: function () {
+          try { localStorage.setItem(ENG_GUIDE_SEEN, '1'); } catch (e) {}
+          setGuide(null);
+        }
       });
     }
 
@@ -4298,7 +4305,8 @@ window.__ModuleLoader__.load({
     var ENG_GUIDE = {
       name: '工程模式',
       intro: '新建任务时选择「工程模式」，说明要设计什么零件或装配体，'
-           + '并给出关键尺寸、材料与工况；不确定的参数会被逐一确认。',
+           + '并给出关键尺寸。首次使用请在「设置 → 工程模式」确认 Python 和 CAD 路径。'
+           + '仅建几何可以不指定材料；强度校核还需材料与工况。',
       explanation: [
         '### 工作方式',
         'Agent 通过 Python win32com 直接驱动 SolidWorks 建模、用 AutoCAD 出图，'
@@ -4314,9 +4322,13 @@ window.__ModuleLoader__.load({
       ].join('\n\n'),
       usage: [
         '### 画一个零件并出图',
-        '> 帮我画一个长 11mm 的正方形，材料 Q235，然后转成 CAD 图纸。',
-        '预期产出：DSH_正方形.sldprt 零件文件、三视图工程图（.slddrw）、'
+        '> 帮我建一个长 80mm、宽 40mm、厚 6mm 的矩形板，暂不指定材料，然后出图。',
+        '预期产出：.sldprt 零件文件、三视图工程图（.slddrw）、'
         + '可直接用 AutoCAD 打开的 DWG，以及一张截图供验收。',
+        '### 先识读一张机械图',
+        '> 先读这张图，核对外形、尺寸和孔槽。信息不足时，一次问齐需要的角度、剖面或文字尺寸。',
+        '预期产出：已确认的信息、可推导的尺寸和待补充项。说明每项需要看哪个部位、'
+        + '从哪个方向补图。关键几何确定后，再按你的要求建模。',
         '### 设计一个多零件机构',
         '> 帮我设计一个三自由度机械臂，负载 5kg，臂展 400mm。',
         '预期产出：拆分为结构件 / 传动机构 / 壳体机架等房间，逐房间建模并做'
@@ -4383,18 +4395,24 @@ window.__ModuleLoader__.load({
       var _st = useState(props.initialPage || 'explanation');
       var page = _st[0], setPage = _st[1];
       var onClose = props.onClose;
-      // Esc 关闭（与宿主弹窗一致的键盘习惯）
+      var dialogRef = useRef(null);
+      // Native modal dialogs remain interactive when another host modal makes the shell inert.
       useEffect(function () {
-        function onKey(e) {
-          if (e && e.key === 'Escape' && typeof onClose === 'function') onClose();
-        }
-        try { document.addEventListener('keydown', onKey); } catch (e) {}
+        var dialog = dialogRef.current;
+        if (!dialog) return;
+        dialog.showModal();
         return function () {
-          try { document.removeEventListener('keydown', onKey); } catch (e) {}
+          dialog.close();
         };
-      }, [onClose]);
-      return h('div', {
+      }, []);
+      return h('dialog', {
+        ref: dialogRef,
         className: 'eng-guide-mask',
+        'aria-label': ENG_GUIDE.name,
+        onCancel: function (event) {
+          event.preventDefault();
+          if (typeof onClose === 'function') onClose();
+        },
         onClick: function (e) {
           // 点遮罩关闭；点弹窗内部不关
           if (e && e.target === e.currentTarget && typeof onClose === 'function') {
@@ -4402,7 +4420,7 @@ window.__ModuleLoader__.load({
           }
         }
       },
-        h('div', { className: 'eng-guide-dlg', role: 'dialog', 'aria-modal': 'true' },
+        h('div', { className: 'eng-guide-dlg' },
           h('div', { className: 'eng-guide-hd' },
             h('div', null,
               h('div', { className: 'eng-guide-title' }, ENG_GUIDE.name),
