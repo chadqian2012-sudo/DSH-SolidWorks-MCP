@@ -483,6 +483,13 @@ check('★ 注入器监听 DOM 变化（切分组/重渲染后自动补注入）
   src.includes('MutationObserver'));
 check('★ 弹窗含两个 Tab（模式说明 / 如何使用）',
   src.includes('eng-guide-tab') && src.includes('eng-guide-tabs'));
+const guideCSS = src.slice(src.indexOf("'.eng-guide-mask{"), src.indexOf("'.eng-preset-help-btn{"));
+check('手册前景和背景随宿主原生主题变量成对切换',
+  guideCSS.includes('.eng-guide-dlg{background:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText)')
+  && guideCSS.includes('.eng-guide-tab.on{background:var(--dsw-alias-bg-layer-3,Canvas);color:var(--dsw-alias-label-primary,CanvasText)')
+  && guideCSS.includes('.eng-guide-quote{background:var(--dsw-alias-bg-layer-2,Canvas)'));
+check('手册不再依赖不存在的凹陷背景变量或.dark类',
+  !guideCSS.includes('--dsw-alias-bg-sunken') && !guideCSS.includes('.dark .eng-guide'));
 check('★ 模式说明含「工作方式」「什么时候选」两节（同官方结构）',
   src.includes('### 工作方式') && src.includes('### 什么时候选'));
 check('★ 如何使用含「示例任务」标签与「预期产出」（同官方结构）',
@@ -537,7 +544,7 @@ for (const listener of guideEvents.get('eng-guide-open') || []) listener({ detai
 cursor = 0;
 check('已读后仍可从已有入口打开使用手册', client.EngPresetGuideHost()?.props.initialPage === 'usage');
 
-for (const closeVia of ['button', 'backdrop', 'escape']) {
+for (const closeVia of ['button', 'backdrop', 'escape', 'cancel']) {
   guideMemory.clear();
   guideEvents.clear();
   effectCollector = [];
@@ -551,6 +558,11 @@ for (const closeVia of ['button', 'backdrop', 'escape']) {
   } else if (closeVia === 'backdrop') {
     const mask = {};
     dialog.props.onClick({ target: mask, currentTarget: mask });
+  } else if (closeVia === 'escape') {
+    let prevented = false, stopped = false;
+    dialog.props.onKeyDownCapture({ key: 'Escape',
+      preventDefault() { prevented = true; }, stopPropagation() { stopped = true; } });
+    check('手册在自身捕获阶段处理Escape，不再依赖宿主默认行为', prevented && stopped);
   } else {
     let prevented = false;
     dialog.props.onCancel({ preventDefault() { prevented = true; } });

@@ -549,6 +549,13 @@ export function apply(ctx) {
     if (baselineChanged) replaceRuntime(baselinePath, JSON.stringify(baseline, null, 2) + '\n');
   }
   const disposers = [];
+  function disposePlugin() {
+    try { if (_paPending && _paPending.size) flushPlatformAgents(); } catch (e) {}
+    for (const dispose of disposers.splice(0).reverse()) {
+      try { dispose(); } catch {}
+    }
+  }
+  ctx.effect(() => disposePlugin);
 
   // 文件令牌与路由必须使用本次插件实例的 findToolsDir。
   function localTokenOf() {
@@ -5623,11 +5630,5 @@ export function apply(ctx) {
   })));
 
 
-  return () => {
-    // 卸载前把待写记录落盘（尽力而为；失败也绝不能抛）
-    try { if (_paPending && _paPending.size) flushPlatformAgents(); } catch (e) {}
-    for (const dispose of disposers.reverse()) {
-      try { dispose(); } catch {}
-    }
-  };
+  return disposePlugin;
 }

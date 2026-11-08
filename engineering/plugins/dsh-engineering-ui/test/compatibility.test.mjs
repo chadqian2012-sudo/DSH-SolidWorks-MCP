@@ -84,7 +84,7 @@ const { apply } = await import('data:text/javascript;base64,' + Buffer.from(rewr
  * 并保留 stat() 供 parentOf() 回落使用（inspect() 已移除）。
  */
 function harness(handles = {}, hostApply = apply) {
-  const routes = new Map(), asks = [];
+  const routes = new Map(), asks = [], effects = [];
   // ── 【测试脚手架修复】同一钩子名可以被注册多次（完全合法）──────────────
   // 原实现 hooks 是 Map<name, fn>：第二个同名注册直接【覆盖】第一个。
   // 本插件确实注册了两个 'agent/turn-stopping'：
@@ -96,6 +96,7 @@ function harness(handles = {}, hostApply = apply) {
   const hooks = new Map();          // name -> [fn, ...]
   const root = { id: 'root' };
   const ctx = {
+    effect(setup) { const cleanup = setup(); effects.push(cleanup); return cleanup; },
     // 【Webots 接入】index.js 已声明 inject=['...','tools'] 并调用 ctx.tools.guard。
     //   这里有守卫的话，mcp__webots__* 的归属校验才会生效；测试不需要它生效。
     tools: { guard() { return () => {}; } },
@@ -133,7 +134,8 @@ function harness(handles = {}, hostApply = apply) {
     subagents: { async listDescendants() { return [{ id: 'child', label: 'child' }]; } },
     userQuestions: { ask(request) { return new Promise((resolve, reject) => asks.push({ request, resolve, reject })); } },
   };
-  const dispose = hostApply(ctx);
+  const returnedDispose = hostApply(ctx);
+  const dispose = () => { for (const cleanup of effects.splice(0).reverse()) cleanup(); };
   async function request(route, payload, method = payload ? 'POST' : 'GET', headers = {}, remoteAddress = '127.0.0.1') {
     const req = Readable.from(payload ? [JSON.stringify(payload)] : []);
     req.url = '/dsh-engineering-ui' + route;
@@ -146,7 +148,7 @@ function harness(handles = {}, hostApply = apply) {
     return { status: res.statusCode, ...body };
   }
   hooks.all = (name) => hooks.get(name) || [];
-  return { ctx, root, routes, hooks, asks, dispose, request };
+  return { ctx, root, routes, hooks, asks, dispose, returnedDispose, request };
 }
 
 test('npm升级可更新只读判定文件并维护既有基线，失败恢复只读状态', async () => {
@@ -398,6 +400,19 @@ test('全部 32 条 HTTP 路由与守卫钩子注册，且可完整卸载', () =
   } finally { h.dispose(); }
   assert.equal(h.routes.size, 0, 'dispose 后路由必须清空');
   assert.equal(h.hooks.size, 0, 'dispose 后钩子必须清空');
+});
+
+test('宿主停用释放路由，重复启用后旧清理不能删除新路由', () => {
+  const h = harness();
+  const count = h.routes.size;
+  h.dispose();
+  assert.equal(h.routes.size, 0, '只触发原生 effect 清理也必须释放路由');
+  apply(h.ctx);
+  assert.equal(h.routes.size, count);
+  h.returnedDispose();
+  assert.equal(h.routes.size, count, '已消费的旧清理不能误删新实例路由');
+  h.dispose();
+  assert.equal(h.routes.size, 0);
 });
 
 test('收尾守卫：非终态时 steer，达到 finished 后放行，且 source 为 producer-owned', () => {
