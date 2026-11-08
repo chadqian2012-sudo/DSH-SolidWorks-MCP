@@ -69,6 +69,7 @@ m.end_sketch()                       # 结束草图（自动 MergePoints 闭合�
 m.rect(cx, cy, w, h)                # 中心矩形
 m.circle(cx, cy, r)                 # 圆
 m.line(x1, y1, x2, y2)              # 直线
+m.arc(cx, cy, start_x, start_y, end_x, end_y, clockwise=False)  # 圆弧，坐标 mm
 m.polyline([(x1,y1), (x2,y2), ...]) # 折线
 m.centerline(x1, y1, x2, y2)        # 中心线（旋转轴）
 
@@ -78,6 +79,24 @@ m.cut(depth=10, through=True)       # 切除 / 完全贯穿
 m.revolve(angle_deg=360, cut=False) # 旋转（需先画中心线）
 m.fillet(radius, edge_points)       # 圆角：边上的采样点坐标
 m.chamfer(width, edge_points, 45)   # 倒角
+```
+
+### 圆弧与直线闭合后拉伸
+
+圆心和两端点都用当前草图的毫米坐标。从草图正面（+Z 一侧）看，`clockwise=False` 为逆时针，`True` 为顺时针。标注不能唯一确定圆心、端点或方向时，集中索取相应的尺寸、视图或剖面，不按图片比例猜测。
+
+下面用 R10 半圆和连接两端的直线组成闭合轮廓，再拉伸 5 mm。
+
+```python
+import os, swapi
+
+m = swapi.new_part()
+m.begin_sketch("Front Plane")
+m.arc(0, 0, 10, 0, -10, 0, clockwise=False)
+m.line(-10, 0, 10, 0)
+m.end_sketch()
+m.extrude(5)
+m.save(os.path.join(os.path.dirname(os.path.abspath(__file__)), "DSH_半圆板.sldprt"))
 ```
 
 ## 4. 调用方式（DSH AI 使用）

@@ -1,6 +1,6 @@
 {
   "name": "dsh-engineering-ui",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "DeepSeek Harness 工程模式一体插件，包含工程 UI、SolidWorks 建模桥接、读图提示词和使用手册。",
   "license": "MIT",
   "type": "module",
