@@ -369,6 +369,26 @@ except Exception as _e:
     check("★ 多参数必须抛 ValueError（拼错名字即暴露）", False, repr(_e))
 
 # ══════════════════════════════════════════════════════════════════════
+sec("对侧重试只允许完整的圆孔草图")
+# SOLIDWORKS identifies both open arcs and full circles as swSketchARC (1).
+_circle = types.SimpleNamespace(GetType=lambda: 1, ConstructionGeometry=False,
+                                IsCircle=lambda: 1, GetRadius=lambda: .005,
+                                GetCenterPoint2=lambda: types.SimpleNamespace(X=.001, Y=.002))
+_arc = types.SimpleNamespace(GetType=lambda: 1, ConstructionGeometry=False, IsCircle=lambda: 0)
+for _segs, _can_migrate in [([_circle], True), ([_circle, _arc], False), ([_arc, _circle], False)]:
+    m = make_model(mode="none")
+    m._sketch_circles_local = [(1., 2., 5.)]
+    sketch = types.SimpleNamespace(GetSketchSegments=lambda: tuple(_segs))
+    m.skm = types.SimpleNamespace(ActiveSketch=sketch)
+    _migrations = []
+    m._migrate_cut_to_opposite_face = lambda x, y, z, circles: _migrations.append(circles)
+    try:
+        m.cut(through=True)
+    except RuntimeError:
+        pass  # all normal cut attempts deliberately fail
+    check("重试保留整个轮廓；段数=%d" % len(_segs),
+          _migrations == ([[(1., 2., 5.)]] if _can_migrate else []), _migrations)
+
 sec("B. 实参个数：Cut3 收到 26 个 / Cut4 收到 27 个")
 # ══════════════════════════════════════════════════════════════════════
 m = make_model(mode="ok")

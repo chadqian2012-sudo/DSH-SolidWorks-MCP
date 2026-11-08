@@ -352,6 +352,35 @@ def test_extrude_reselects_after_clear(swapi):
           [r["callout"] for r in doc.select_log])
 
 
+def test_native_arc_profile():
+    """Check the contour delivered to SOLIDWORKS, including the on-face sketch offset."""
+    from unittest import TestCase
+    from unittest.mock import Mock
+    sk = FakeFeature("Sketch1", "ProfileFeature")
+    m = _make_model(FakeModelDoc(features=[sk]))
+    m.skm.ActiveSketch = sk
+    m._active_sketch_name = sk.Name
+    m._surface_sketch_offset = 5
+    m.skm.CreateArc = Mock()
+    m.skm.CreateLine = Mock()
+    m.arc(0, 0, 10, 0, -10, 0).line(-10, 0, 10, 0)
+    m.skm.CreateArc.assert_called_once_with(0, .005, 0, .010, .005, 0, -.010, .005, 0, 1)
+    m.skm.CreateLine.assert_called_once_with(-.010, .005, 0, .010, .005, 0)
+    m.end_sketch()
+    check("闭合半圆的草图交给拉伸", m.extrude(5) is not None and m._extrude_profile_used == sk.Name)
+
+    with TestCase().assertRaises(RuntimeError):
+        m.arc(0, 0, 0, 3, 3, 0)
+    m.skm.ActiveSketch = sk
+    with TestCase().assertRaises(ValueError):
+        m.arc(0, 0, 3, 0, 0, 4)
+    assert m.skm.CreateArc.call_count == 1  # invalid calls never reach CAD
+    m.skm.CreateArc.return_value = None
+    with TestCase().assertRaises(RuntimeError):
+        m.arc(0, 0, 0, 3, 3, 0, clockwise=True)
+    m.skm.CreateArc.assert_called_with(0, 0, 0, 0, .003, 0, .003, 0, 0, -1)
+
+
 def test_empty_selection_raises(swapi):
     """契约 2：选择集为空时调 FeatureExtrusion3 → 必须显式报错。"""
     print("\n[2] 选择集为空 → 必须显式报错（绝不静默返回 None）")
@@ -583,6 +612,7 @@ def main():
               getattr(swapi.SWModel, "CUT_PROFILE_MARK", None))
 
         test_extrude_reselects_after_clear(swapi)
+        test_native_arc_profile()
         test_empty_selection_raises(swapi)
         test_end_sketch_preselect_kept(swapi)
         test_callout_variant(swapi)

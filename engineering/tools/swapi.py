@@ -3127,6 +3127,7 @@ _COM_METHOD_NAMES = frozenset((
     "GetMaterialPropertyName2", "SetMaterialPropertyName2",
     "GetClosestPointOn", "GetSelectedObject6", "GetBodies2",
     "GetMassProperties2", "GetMaterialIdName", "GetMaterialUserName",
+    "GetType", "GetCenterPoint2", "GetRadius", "IsCircle",
 ))
 
 
@@ -7662,10 +7663,8 @@ class SWModel:
         x2, y2 = (cx + w / 2) * MM, (adj_cy - h / 2) * MM
         self.skm.CreateCornerRectangle(x1, y1, 0, x2, y2, 0)
         # 【Bug T1 修复】记录轮廓面积，供 cut() 期望体积校验
-        try:
+        if self._sketch_area_mm2 is not None:
             self._sketch_area_mm2 += abs(float(w) * float(h))
-        except Exception:
-            pass
         return self
 
     def circle(self, cx, cy, r):
@@ -7677,11 +7676,8 @@ class SWModel:
         sketch_cx = 0.0 if self._right_plane_mode else cx
         self.skm.CreateCircleByRadius(sketch_cx * MM, adj_cy * MM, 0, r * MM)
         # 【Bug T1 修复】记录轮廓面积，供 cut() 期望体积校验
-        try:
-            import math as _m
-            self._sketch_area_mm2 += _m.pi * float(r) * float(r)
-        except Exception:
-            pass
+        if self._sketch_area_mm2 is not None:
+            self._sketch_area_mm2 += math.pi * float(r) * float(r)
         # 【底面切除迁移】记录圆（局部坐标 cx,cy,r），供 cut() 失败后在对侧
         # 面重建同位轮廓
         try:
@@ -7700,6 +7696,46 @@ class SWModel:
         adj_y1 = y1 + self._surface_sketch_offset
         adj_y2 = y2 + self._surface_sketch_offset
         self.skm.CreateLine(x1 * MM, adj_y1 * MM, 0, x2 * MM, adj_y2 * MM, 0)
+        return self
+
+    def arc(self, cx, cy, start_x, start_y, end_x, end_y, clockwise=False):
+        """在当前二维草图中画圆心及两端点确定的圆弧，单位 mm；返回模型。"""
+        coordinates = (cx, cy, start_x, start_y, end_x, end_y)
+        if not isinstance(clockwise, bool) or any(
+                isinstance(value, (bool, str, bytes)) for value in coordinates):
+            raise ValueError("Arc coordinates must be numbers and clockwise must be a boolean")
+        try:
+            cx, cy, start_x, start_y, end_x, end_y = map(float, coordinates)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("Arc coordinates must be finite numbers") from error
+        if not all(math.isfinite(value) for value in (cx, cy, start_x, start_y, end_x, end_y)):
+            raise ValueError("Arc coordinates must be finite")
+        radius = math.hypot(start_x - cx, start_y - cy)
+        end_radius = math.hypot(end_x - cx, end_y - cy)
+        if (not math.isfinite(radius) or not math.isfinite(end_radius) or radius <= 0 or end_radius <= 0
+                or (start_x, start_y) == (end_x, end_y)
+                or not math.isclose(radius, end_radius, rel_tol=1e-8, abs_tol=1e-6)):
+            raise ValueError("Arc needs distinct endpoints on the same nonzero circle")
+        dy = self._surface_sketch_offset
+        center = (cx * MM, (cy + dy) * MM, 0)
+        start = (start_x * MM, (start_y + dy) * MM, 0)
+        end = (end_x * MM, (end_y + dy) * MM, 0)
+        angles = []
+        for x, y, _ in (start, end):
+            dx, dy_m = x - center[0], y - center[1]
+            r_m = math.hypot(dx, dy_m)
+            if not (r_m > 0 and math.isclose(r_m, radius * MM, rel_tol=1e-8, abs_tol=1e-9)):
+                raise ValueError("Arc coordinates exceed the supported numeric range")
+            angles.append(math.atan2(dy_m, dx) % math.tau)
+        if angles[0] == angles[1]:
+            raise ValueError("Arc endpoints must define different directions from the center")
+        self._ensure_sketch_active()
+        self._ensure_area_context()
+        segment = self.skm.CreateArc(*center, *start, *end, -1 if clockwise else 1)
+        if segment is None:
+            raise RuntimeError("SOLIDWORKS did not create the sketch arc")
+        # A partial arc does not determine a closed profile's area.
+        self._sketch_area_mm2 = None
         return self
 
     def polyline(self, points, close=None):
@@ -9271,14 +9307,8 @@ class SWModel:
             pass
         return out
 
-    def _sketch_circle_radii_mm(self):
-        """【Bug T1 修复·验收判据】读取轮廓草图中的圆半径列表（mm）。
-
-        用途：估算切除的期望体积 E = π·Σr²·H（H=贯穿长度或盲孔深度），
-        替代"去料率≥3%"这种对小孔天然误判的启发式阈值。
-        实测依据：Φ10 小孔贯穿 Φ60x40 圆柱，真实去料 2.90% ——
-        被 3% 阈值误拒；用几何期望判据则正确接受（96% 命中）。
-        """
+    def _sketch_circles_mm(self):
+        """仅在全部非构造段均为完整圆时，返回实际圆心和半径；否则返回空表。"""
         sk = None
         try:
             sk = self.skm.ActiveSketch
@@ -9308,20 +9338,32 @@ class SWModel:
                 sk = None
         if sk is None:
             return []
-        radii = []
+        circles = []
         try:
-            segs = sk.GetSketchSegments
+            segs = _com_get(sk, "GetSketchSegments")
             if segs is not None:
                 lst = list(segs) if isinstance(segs, (list, tuple)) else [segs]
-                for s in lst:
-                    try:
-                        if int(s.GetType()) == 0:  # swSketch_CIRCLE
-                            radii.append(float(s.GetRadius()) * 1000.0)
-                    except Exception:
+                for segment in lst:
+                    if _com_get(segment, "ConstructionGeometry"):
                         continue
+                    if int(_com_get(segment, "GetType")) != 1:  # swSketchARC
+                        return []
+                    arc = early(segment, "ISketchArc") if getattr(segment, "_oleobj_", None) is not None else segment
+                    if not _com_get(arc, "IsCircle"):
+                        return []
+                    center = _com_get(arc, "GetCenterPoint2")
+                    circle = (float(center.X) / MM, float(center.Y) / MM,
+                              float(_com_get(arc, "GetRadius")) / MM)
+                    if not all(math.isfinite(value) for value in circle) or circle[2] <= 0:
+                        return []
+                    circles.append(circle)
         except Exception:
-            pass
-        return radii
+            return []
+        return circles
+
+    def _sketch_circle_radii_mm(self):
+        """纯圆轮廓的实际半径，用于保守切除体积校验。"""
+        return [circle[2] for circle in self._sketch_circles_mm()]
 
     def _bbox_extent_mm(self, axis=2):
         """实体包围盒在指定轴方向(0=X,1=Y,2=Z)的长度（mm）；取不到返回 None。"""
@@ -10102,6 +10144,14 @@ class SWModel:
         _migrated = False
         try:
             _circles = list(getattr(self, "_sketch_circles_local", []) or [])
+            _actual_circles = self._sketch_circles_mm() if _circles else []
+            if (len(_circles) != len(_actual_circles) or not all(
+                    math.isclose(original, actual, rel_tol=1e-8, abs_tol=1e-6)
+                    for recorded, observed in zip(sorted(_circles), sorted(_actual_circles))
+                    for original, actual in zip(recorded, observed))):
+                _circles = []
+            else:
+                _circles = _actual_circles
             _axis = int(getattr(self, "_sketch_normal_axis", 2))
             _off = float(getattr(self, "_sketch_axis_offset_mm", 0.0))
             if (through and _circles and _axis == 2):
