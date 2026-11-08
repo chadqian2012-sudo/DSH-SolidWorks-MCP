@@ -20,6 +20,8 @@ import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
 
 const SHIM_LLM = `
 export function createUserMessage(input) {
@@ -81,7 +83,7 @@ const { apply } = await import('data:text/javascript;base64,' + Buffer.from(rewr
  * sessionPersistence 用 0.2.0 合同：open(id,'read') → { header, read(), close() }，
  * 并保留 stat() 供 parentOf() 回落使用（inspect() 已移除）。
  */
-function harness(handles = {}) {
+function harness(handles = {}, hostApply = apply) {
   const routes = new Map(), asks = [];
   // ── 【测试脚手架修复】同一钩子名可以被注册多次（完全合法）──────────────
   // 原实现 hooks 是 Map<name, fn>：第二个同名注册直接【覆盖】第一个。
@@ -131,7 +133,7 @@ function harness(handles = {}) {
     subagents: { async listDescendants() { return [{ id: 'child', label: 'child' }]; } },
     userQuestions: { ask(request) { return new Promise((resolve, reject) => asks.push({ request, resolve, reject })); } },
   };
-  const dispose = apply(ctx);
+  const dispose = hostApply(ctx);
   async function request(route, payload, method = payload ? 'POST' : 'GET', headers = {}, remoteAddress = '127.0.0.1') {
     const req = Readable.from(payload ? [JSON.stringify(payload)] : []);
     req.url = '/dsh-engineering-ui' + route;
@@ -146,6 +148,72 @@ function harness(handles = {}) {
   hooks.all = (name) => hooks.get(name) || [];
   return { ctx, root, routes, hooks, asks, dispose, request };
 }
+
+test('npm升级可更新只读判定文件并维护既有基线，失败恢复只读状态', async () => {
+  const temp = mkdtempSync(path.join(tmpdir(), 'engineering-runtime-upgrade-'));
+  const keys = ['DSH_HOME', 'DSH_STATE_DIR', 'USERPROFILE'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  const engineering = path.join(temp, 'package', 'engineering');
+  const home = path.join(temp, 'home');
+  const tools = path.join(home, '.agent-presets', 'engineering', 'tools');
+  const state = path.join(temp, 'state');
+  const target = path.join(tools, 'defense_gate.py');
+  const baselinePath = path.join(state, '.defense', 'gate_baseline.json');
+  mkdirSync(path.join(engineering, 'tools'), { recursive: true });
+  mkdirSync(path.join(engineering, 'skills', 'mode-selection'), { recursive: true });
+  mkdirSync(path.dirname(baselinePath), { recursive: true });
+  mkdirSync(tools, { recursive: true });
+  writeFileSync(path.join(engineering, 'tools', 'mode_gate.py'), 'new mode gate');
+  writeFileSync(path.join(engineering, 'tools', 'defense_gate.py'), 'trusted new gate');
+  writeFileSync(path.join(engineering, 'skills', 'mode-selection', 'SKILL.md'), 'packaged skill');
+  writeFileSync(target, 'protected old gate');
+  fs.chmodSync(target, 0o444);
+  writeFileSync(path.join(tools, 'settings.json'), '{"keep":"settings"}');
+  writeFileSync(path.join(state, 'workflow_state.json'), '{"keep":"task"}');
+  const untouched = { sha256: 'user-owned-record', size: 123, mtime: 456 };
+  writeFileSync(baselinePath, JSON.stringify({ schema: 'dsh-engineering/gate-baseline@1',
+    reason: 'manual', files: { 'defense_gate.py': { sha256: 'old' }, 'custom.py': untouched } }));
+  process.env.DSH_HOME = home;
+  process.env.DSH_STATE_DIR = state;
+  process.env.USERPROFILE = path.join(temp, 'user');
+  const hostSource = rewritten.replaceAll('import.meta.dirname',
+    JSON.stringify(path.join(engineering, 'plugins', 'dsh-engineering-ui', 'lib')));
+  const { apply: installedApply } = await import('data:text/javascript;base64,' + Buffer.from(hostSource).toString('base64'));
+  try {
+    harness({}, installedApply).dispose();
+    assert.equal(readFileSync(target, 'utf8'), 'trusted new gate');
+    assert.equal(fs.statSync(target).mode & 0o200, 0, '合法升级后继续只读');
+    const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
+    assert.equal(baseline.files['defense_gate.py'].sha256,
+      crypto.createHash('sha256').update(readFileSync(target)).digest('hex'));
+    assert.deepEqual(baseline.files['custom.py'], untouched);
+    assert.equal(baseline.reason, 'manual');
+    assert.equal(readFileSync(path.join(tools, 'settings.json'), 'utf8'), '{"keep":"settings"}');
+    assert.equal(readFileSync(path.join(state, 'workflow_state.json'), 'utf8'), '{"keep":"task"}');
+    assert.equal(readFileSync(path.join(home, 'skills', 'mode-selection', 'SKILL.md'), 'utf8'), 'packaged skill');
+    const originalRename = fs.renameSync;
+    fs.renameSync = (from, to) => { if (to === target) throw new Error('fixture rename failed'); return originalRename(from, to); };
+    fs.chmodSync(target, 0o644);
+    writeFileSync(target, 'previous after interrupted update');
+    fs.chmodSync(target, 0o444);
+    try { assert.throws(() => harness({}, installedApply), /fixture rename failed/); }
+    finally { fs.renameSync = originalRename; }
+    assert.equal(readFileSync(target, 'utf8'), 'previous after interrupted update');
+    assert.equal(fs.statSync(target).mode & 0o200, 0, '失败也必须恢复只读');
+    assert.equal(fs.readdirSync(tools).some(name => name.includes('.tmp-')), false);
+    harness({}, installedApply).dispose();
+    assert.equal(readFileSync(target, 'utf8'), 'trusted new gate', '再次加载可恢复被中断的升级');
+    fs.rmSync(baselinePath);
+    harness({}, installedApply).dispose();
+    assert.equal(fs.existsSync(baselinePath), false, '原来没有基线时不能自动创建');
+  } finally {
+    fs.chmodSync(target, 0o644);
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+    }
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
 
 test('文件令牌按当前状态目录生效，环境令牌优先，普通轮询不被限速', async () => {
   const temp = mkdtempSync(path.join(tmpdir(), 'engineering-route-auth-'));
@@ -338,7 +406,6 @@ test('收尾守卫：非终态时 steer，达到 finished 后放行，且 source
   const tools = path.join(temp, '.agent-presets', 'engineering', 'tools');
   mkdirSync(tools, { recursive: true });
   writeFileSync(path.join(tools, 'workflow_state.json'), JSON.stringify({ step: 'design' }));
-  writeFileSync(path.join(tools, 'mode_state.json'), JSON.stringify({ rooms: { part: { active: true } } }));
   process.env.DSH_HOME = temp;
   const h = harness();
   try {
@@ -358,7 +425,7 @@ test('收尾守卫：非终态时 steer，达到 finished 后放行，且 source
       }
     };
     stop();
-    assert.equal(steered.length, 1, '未达代码级终态必须 steer 一次');
+    assert.equal(steered.length, 1, '进行中的工程流程没有房间记录时也必须 steer');
     // 【V4】steer 的消息 source 必须是生产者自有 kind，不得是通用 plugin
     assert.equal(steered[0].source.kind, 'plugin:dsh-engineering-ui');
     assert.equal(Object.hasOwn(steered[0].source, 'plugin'), false,
@@ -375,6 +442,41 @@ test('收尾守卫：非终态时 steer，达到 finished 后放行，且 source
   } finally {
     h.dispose();
     if (oldHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = oldHome;
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('无工程状态的识图回合可结束；活动房间及未收尾的流程仍须继续', () => {
+  const temp = mkdtempSync(path.join(tmpdir(), 'dsh-eng-readonly-'));
+  const oldState = process.env.DSH_STATE_DIR;
+  process.env.DSH_STATE_DIR = temp;
+  const h = harness();
+  try {
+    const steered = [];
+    const agent = { id: 'readonly-drawing',
+      session: { header: { agentPreset: 'engineering' }, snapshotEvents: () => [] },
+      steer: (message) => steered.push(message) };
+    const stop = () => h.hooks.all('agent/turn-stopping').forEach(fn => fn({ agent }));
+    stop();
+    assert.equal(steered.length, 0, '只读图没有登记工程任务，无需完成标记也可结束');
+    writeFileSync(path.join(temp, 'mode_state.json'), JSON.stringify({ rooms: { part: { active: true } } }));
+    stop();
+    assert.equal(steered.length, 1, '仅有活动房间也不能提前结束');
+    writeFileSync(path.join(temp, 'workflow_state.json'), JSON.stringify({ task_id: 'current', step: 'design' }));
+    writeFileSync(path.join(temp, 'mode_state.json'), JSON.stringify({
+      rooms: { part: { task_id: 'current', active: false, ended_at: 'now' } },
+    }));
+    stop();
+    assert.equal(steered.length, 2, '房间结束不代表整个工程流程已经收尾');
+    writeFileSync(path.join(temp, 'workflow_state.json'), JSON.stringify({ task_id: 'current', step: 'idle' }));
+    writeFileSync(path.join(temp, 'mode_state.json'), JSON.stringify({
+      rooms: { old: { task_id: 'previous', active: true } },
+    }));
+    stop();
+    assert.equal(steered.length, 2, '其他任务的旧房间不催办当前回合');
+  } finally {
+    h.dispose();
+    if (oldState === undefined) delete process.env.DSH_STATE_DIR; else process.env.DSH_STATE_DIR = oldState;
     rmSync(temp, { recursive: true, force: true });
   }
 });

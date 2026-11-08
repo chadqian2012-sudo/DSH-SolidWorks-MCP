@@ -486,6 +486,68 @@ async function parentOf(ctx, childId) {
 }
 
 export function apply(ctx) {
+  // npm bundles carry the same tools and skills as the ZIP installer.
+  const engineering = import.meta.dirname && path.resolve(import.meta.dirname, '../../..');
+  if (engineering && fs.existsSync(path.join(engineering, 'tools', 'mode_gate.py'))) {
+    const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+    const dshHome = process.env.DSH_HOME || path.join(home, '.dsh');
+    const installedTools = path.join(dshHome, '.agent-presets', 'engineering', 'tools');
+    const legacyState = path.join(home, '.dsh', '.agent-presets', 'engineering', 'tools');
+    const stateDir = (process.env.DSH_STATE_DIR || '').trim()
+      || (fs.existsSync(legacyState) ? legacyState : installedTools);
+    const baselinePath = path.join(stateDir, '.defense', 'gate_baseline.json');
+    const baseline = readJsonSafe(baselinePath);
+    let baselineChanged = false;
+    const staticTools = new Set(['ac_rules.json', 'cadx.lsp', 'LICENSE.Auto-SolidWorks',
+      'profile-manifest.ps1', 'solidworks-modeling.md']);
+    function replaceRuntime(output, content) {
+      fs.mkdirSync(path.dirname(output), { recursive: true });
+      const mode = fs.existsSync(output) ? fs.statSync(output).mode & 0o777 : null;
+      const temporary = output + '.tmp-' + crypto.randomUUID();
+      try {
+        fs.writeFileSync(temporary, content);
+        if (mode !== null && !(mode & 0o200)) fs.chmodSync(output, mode | 0o200);
+        fs.renameSync(temporary, output);
+      } finally {
+        try {
+          if (mode !== null && fs.existsSync(output)) fs.chmodSync(output, mode);
+        } finally {
+          if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+        }
+      }
+    }
+    function syncRuntime(source, destination, relative = '', skills = false) {
+      for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+        const name = relative ? relative + '/' + entry.name : entry.name;
+        const input = path.join(source, entry.name);
+        const output = path.join(destination, entry.name);
+        if (entry.isDirectory()) {
+          if (skills || ['physics', 'rules', 'examples', 'webots_mcp'].includes(entry.name)) {
+            syncRuntime(input, output, name, skills);
+          }
+          continue;
+        }
+        if (!entry.isFile() || (!skills && (entry.name.startsWith('test')
+            || !(name.endsWith('.py') || name.startsWith('physics/') && name.endsWith('.json')
+              || staticTools.has(name))))) continue;
+        const content = fs.readFileSync(input);
+        if (!fs.existsSync(output) || !fs.readFileSync(output).equals(content)) replaceRuntime(output, content);
+        if (!skills && baseline?.schema === 'dsh-engineering/gate-baseline@1'
+            && Object.hasOwn(baseline.files || {}, name)) {
+          if (!fs.readFileSync(output).equals(content)) throw new Error('Runtime changed during update: ' + name);
+          const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+          if (baseline.files[name]?.sha256 !== sha256) {
+            const stat = fs.statSync(output);
+            baseline.files[name] = { sha256, size: stat.size, mtime: Math.round(stat.mtimeMs) / 1000 };
+            baselineChanged = true;
+          }
+        }
+      }
+    }
+    syncRuntime(path.join(engineering, 'tools'), installedTools);
+    syncRuntime(path.join(engineering, 'skills'), path.join(dshHome, 'skills'), '', true);
+    if (baselineChanged) replaceRuntime(baselinePath, JSON.stringify(baseline, null, 2) + '\n');
+  }
   const disposers = [];
 
   // 文件令牌与路由必须使用本次插件实例的 findToolsDir。
@@ -936,113 +998,38 @@ export function apply(ctx) {
 
   function detectTaskFinished(agent) {
     try {
-      const _textEarly = collectRecentAssistantText(agent, 60);
-      if (hasStandaloneTaskDone(_textEarly)) {
-        return { done: true, reason: '检测到显式完成标记 [TASK_DONE]（独占一行，最高优先级）' };
+      if (hasStandaloneTaskDone(collectRecentAssistantText(agent, 60))) {
+        return { done: true, reason: '检测到显式完成标记 [TASK_DONE]（独占一行）' };
       }
-
       const toolsDir = findToolsDir();
-      if (toolsDir) {
-        // ① 显式完成标记（最权威、最直接）
-        const mk = readJsonSafe(path.join(toolsDir, 'TASK_FINISHED.json'));
-        if (mk && mk.finished) {
-          return { done: true, reason: 'TASK_FINISHED 标记：' + (mk.finished_at || '') };
-        }
-        // ② 门禁状态机：finished 是代码级终态
-        const wf = readJsonSafe(path.join(toolsDir, 'workflow_state.json'));
-        // ── 【守卫修复·误拦】补全所有【非进行中】的门禁状态 ──────────────
-        // 原实现只认 step === 'finished'。但 reset 后 step 为 'idle'
-        //   （以及初始化前的 ''/undefined），这些同样是【没有进行中的任务】，
-        //   守卫却把它们当成"任务未完成"→ 反复拦截，形成死锁：
-        //   用户已经收工，但守卫要求必须有 finished，而 reset 又不会给 finished。
-        // 修复：把 idle / 空 / 未开始 一并视为可放行（任务确实没在进行）。
-        const _step = wf && wf.step !== undefined && wf.step !== null ? String(wf.step) : '';
-        if (wf && (wf.step === 'finished' || wf.finished_at)) {
-          return { done: true, reason: 'workflow_gate 已收尾（step=finished）' };
-        }
-        // ── 【守卫修复】先做"是否有活动房间"的硬检查 ──────────────────────
-        // 顺序很重要：房间活跃性是最强信号，必须【先于】idle 放行判断。
-        //   否则出现边界漏洞：step=idle 但房间仍在跑（状态被误置/竞态）时，
-        //   守卫会漏放正在进行的任务。
-        const _msEarly = readJsonSafe(path.join(toolsDir, 'mode_state.json'));
-        const _roomsEarly = (_msEarly && _msEarly.rooms) || {};
-        // ── 【未记录 BUG 修复·跨任务残留房间卡死守卫】────────────────────
-        // 实测（2026-10-29 盘查真实安装副本）：
-        //   mode_state.json 里躺着 3 个 active 房间（底盘与车架总成 / 驱动轮组 /
-        //   总理子代理），task_epoch 还是 10 月中旬的上一轮任务，而且
-        //   mode_state 里【没有 task_id 字段】，无法判断它们属不属于本轮。
-        //   后果：detectTaskFinished() 永远走"仍有 active 房间 → done=false"
-        //   分支，守卫对【所有新会话】每轮 steer、永不放行 —— 用户看到的就是
-        //   "模型一直在重复同一句话、停不下来"。
-        // 修复：判断 active 时只看【属于本轮 workflow task_id】的房间；
-        //   · 房间记录没有 task_id（升级前的老数据）→ 按【属本轮】处理
-        //     （宁可不放行，也不能把正在跑的房间当残留误放）；
-        //   · 只有明确记着别的 task_id 才排除，并在日志里留痕。
-        const _wfTidEarly = (wf && wf.task_id) ? String(wf.task_id) : '';
-        const _namesAllEarly = Object.keys(_roomsEarly);
-        let _staleRoomCount = 0;
-        const _namesEarly = _namesAllEarly.filter((n) => {
-          const _rec = _roomsEarly[n] || {};
-          const _rt = _rec.task_id;
-          if (!_rt || !_wfTidEarly) return true;      // 无从判断 → 保守按本轮
-          if (String(_rt) === _wfTidEarly) return true;
-          _staleRoomCount += 1;
-          return false;
-        });
-        if (_staleRoomCount > 0) {
-          try {
-            console.warn('[dsh-engineering-ui] 守卫忽略上一轮任务的 '
-                         + _staleRoomCount + ' 个残留房间（task 不匹配）');
-          } catch (e) {}
-        }
-        const _anyActiveEarly = _namesEarly.some((n) => (_roomsEarly[n] || {}).active);
-        if (_anyActiveEarly) {
-          return { done: false, reason: '仍有 active 房间，任务在进行中' };
-        }
-        if (wf && (_step === 'idle' || _step === '')) {
-          return { done: true, reason: '门禁处于未开始/已重置状态（step=' + _step + '），且无活动房间' };
-        }
-        // ② 全部房间均已结束
-        const ms = readJsonSafe(path.join(toolsDir, 'mode_state.json'));
-        if (ms) {
-          const rooms = ms.rooms || {};
-          // 【未记录 BUG 修复】这里同样只认【本轮任务】的房间（理由见上）。
-          const names = Object.keys(rooms).filter((n) => {
-            const _rt = (rooms[n] || {}).task_id;
-            if (!_rt || !_wfTidEarly) return true;
-            return String(_rt) === _wfTidEarly;
-          });
-          // ── 【守卫修复·误拦】空房间表 = 没有进行中的房间 ────────────────
-          // 原条件要求 names.length > 0 才判定，导致 rooms-reset 清空后
-          //   （rooms = {}）直接跳过，判定为"未完成"→ 永久拦截。
-          //   而"没有任何房间"恰恰是最明确的"没有活儿在进行"。
-          //   注意：仅在门禁不在 known 进行中状态时才放行，避免误放。
-          const _wfBusy = (_step && _step !== 'idle' && _step !== 'finished');
-          if (names.length === 0) {
-            if (!_wfBusy) {
-              return { done: true, reason: '无任何房间记录且门禁非进行中（已收工）' };
-            }
-          } else {
-            const allEnded = names.every((n) => {
-              const r = rooms[n] || {};
-              return r.ended_at || r.failed_at;
-            });
-            const anyActive = names.some((n) => (rooms[n] || {}).active);
-            if (allEnded && !anyActive) {
-              return { done: true, reason: '全部房间已收尾（ended/failed）' };
-            }
-          }
-        }
+      if (!toolsDir) return { done: true, reason: '尚未登记工程任务' };
+      const workflowPath = path.join(toolsDir, 'workflow_state.json');
+      const roomsPath = path.join(toolsDir, 'mode_state.json');
+      const workflow = readJsonSafe(workflowPath);
+      const mode = readJsonSafe(roomsPath);
+      if ((!workflow && fs.existsSync(workflowPath)) || (!mode && fs.existsSync(roomsPath))) {
+        return { done: false, reason: '已登记的工程状态无法读取，需先检查状态文件' };
       }
-      // ── 【PhaseA 修复 / BUG-B 修复】关键词放行已删除 ───────────────────
-      // 只保留【零歧义的显式开关】[TASK_DONE]，且它已在函数开头判定完毕
-      // （见上方 BUG-B 注释：必须无条件生效，不能被房间状态挡住）。
-      // 其余"已生成/已导出/完成"等自然语言一律【不再】放行 —— 它们在
-      // 工程对话里每轮都出现，正是守卫失灵的根因。
-      // 注：[任务完成] 这个中文标记过于口语化，极易被普通叙述命中
-      //     （比如"任务完成度 60%"），已从放行条件中移除，只保留英文标记。
-    } catch (e) {}
-    return { done: false, reason: '' };
+      const taskId = String(workflow?.task_id || '');
+      const rooms = Object.values(mode?.rooms || {}).filter((room) =>
+        !taskId || !room?.task_id || String(room.task_id) === taskId);
+      if (rooms.some((room) => room?.active)) {
+        return { done: false, reason: '当前工程仍有活动房间' };
+      }
+      const finished = readJsonSafe(path.join(toolsDir, 'TASK_FINISHED.json'));
+      if (finished?.finished) return { done: true, reason: '工程任务已登记完成' };
+      const step = String(workflow?.step || '');
+      if (step === 'finished' || workflow?.finished_at) {
+        return { done: true, reason: '工程流程已收尾' };
+      }
+      if (step && step !== 'idle') {
+        return { done: false, reason: '工程流程仍在进行（step=' + step + '）' };
+      }
+      // 未创建工程流程的读图/问答回合可以结束；只观察状态，不标记任务完成。
+      return { done: true, reason: '没有进行中的工程流程或活动房间' };
+    } catch (error) {
+      return { done: false, reason: '无法检查工程任务状态' };
+    }
   }
 
   /**

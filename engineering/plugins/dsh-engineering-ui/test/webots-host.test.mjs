@@ -82,7 +82,7 @@ test('a slow read subprocess does not block host context queries',async()=>{
 test('actual host apply keeps connection and read-only routes available without MCP',async()=>{
  state('task-1','room-1');const routes=new Map();const guards=[];const hooks=new Map();
  const ctx2={...ctx,webServer:{register:r=>{routes.set(r.path,r);return ()=>{};}},tools:{guard:fn=>{guards.push(fn);return ()=>{};}},on:(name,fn)=>{hooks.set(name,fn);return ()=>{};},get:()=>undefined,inject:()=>()=>{}};
- const source=fs.readFileSync(process.env.DSH_S07_HOST_SOURCE || new URL('../lib/index.js',import.meta.url),'utf8').replace(/^import .*$/gm,'').replace(/^export /gm,'');
+ const source=fs.readFileSync(process.env.DSH_S07_HOST_SOURCE || new URL('../lib/index.js',import.meta.url),'utf8').replace(/^import .*$/gm,'').replace(/^export /gm,'').replaceAll('import.meta.dirname','undefined');
  const sandbox={fs,path,os,crypto,spawnSync,installWebots:mod.installWebots,agentPresets:{},DefenseSigner:class{writeRuntime(){}startGuard(){}stopGuard(){}},process:{env:{...env},platform:process.platform,cwd:()=>temp},console:{log(){},warn(){},error(){}},setTimeout:()=>0,clearTimeout(){},setInterval:()=>0,clearInterval(){},URL,URLSearchParams};
  vm.runInNewContext(source+'\nthis.boot=apply;',sandbox);const dispose=sandbox.boot(ctx2);
  assert.ok(routes.has('/dsh-engineering-ui/conn-state'));assert.ok(routes.has('/dsh-engineering-ui/webots-context'),'host did not install Webots routes');assert.equal(guards.length,1);

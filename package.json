@@ -1,0 +1,66 @@
+{
+  "name": "dsh-engineering-ui",
+  "version": "1.5.0",
+  "description": "DeepSeek Harness 工程模式一体插件，包含工程 UI、SolidWorks 建模桥接、读图提示词和使用手册。",
+  "license": "MIT",
+  "type": "module",
+  "main": "engineering/plugins/dsh-engineering-ui/lib/index.js",
+  "exports": {
+    ".": "./engineering/plugins/dsh-engineering-ui/lib/index.js",
+    "./client": "./engineering/plugins/dsh-engineering-ui/lib/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./engineering/plugins/dsh-engineering-ui/locale/*.json",
+    "./icon": "./engineering/plugins/dsh-engineering-ui/icon.svg"
+  },
+  "icon": "./engineering/plugins/dsh-engineering-ui/icon.svg",
+  "files": [
+    "engineering/plugins/dsh-engineering-ui/lib/",
+    "engineering/plugins/dsh-engineering-ui/locale/",
+    "engineering/plugins/dsh-engineering-ui/icon.svg",
+    "engineering/plugins/dsh-engineering-ui/cordis.patch.yml",
+    "engineering/plugins/dsh-engineering-ui/preset-engineering.patch.yml",
+    "engineering/skills/",
+    "engineering/tools/*.py",
+    "!engineering/tools/test*",
+    "engineering/tools/ac_rules.json",
+    "engineering/tools/cadx.lsp",
+    "engineering/tools/LICENSE.Auto-SolidWorks",
+    "engineering/tools/profile-manifest.ps1",
+    "engineering/tools/solidworks-modeling.md",
+    "engineering/tools/examples/*.py",
+    "engineering/tools/physics/*.py",
+    "!engineering/tools/physics/_test_imports.py",
+    "engineering/tools/physics/*.json",
+    "engineering/tools/physics/rules/*.json",
+    "engineering/tools/webots_mcp/*.py"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+    },
+    "bundle": {
+      "patch": [
+        "./engineering/plugins/dsh-engineering-ui/cordis.patch.yml",
+        "./engineering/plugins/dsh-engineering-ui/preset-engineering.patch.yml"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "react": ">=18 <19"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {"optional": true},
+    "react": {"optional": true}
+  },
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.0-rc.1 <0.3.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chadqian2012-sudo/DSH-SolidWorks-MCP.git"
+  }
+}
