@@ -81,6 +81,7 @@ assert.ok(rewritten.includes('data:text/javascript'), '依赖 shim 必须替换�
 const { apply } = await import('data:text/javascript;base64,' + Buffer.from(rewritten).toString('base64'));
 
 function harness(rootAgents) {
+  const effects = [];
   const routes = new Map();
   // ── 【测试脚手架修复】同名钩子可以被注册多次（生产环境会依次调用全部）──
   // 原实现 Map<name, fn> 会让后注册的覆盖先注册的。本插件注册了【两个】
@@ -90,6 +91,7 @@ function harness(rootAgents) {
   const hooks = new Map();          // name -> [fn, ...]
   const roots = Array.isArray(rootAgents) ? rootAgents : [];
   const ctx = {
+    effect(factory) { const dispose = factory(); effects.push(dispose); return dispose; },
     // 【Webots 接入】index.js 的 inject 里已加 'tools'，apply() 会调 ctx.tools.guard。
     tools: { guard() { return () => {}; } },
     on(name, fn) {
@@ -110,7 +112,8 @@ function harness(rootAgents) {
     subagents: { async listDescendants() { return []; } },
     userQuestions: { ask() { return new Promise(() => {}); } },
   };
-  const dispose = apply(ctx);
+  apply(ctx);
+  const dispose = () => { for (const cleanup of effects.splice(0).reverse()) cleanup(); };
   // 真实运行时会把同名钩子的【全部】处理函数依次调用，
   // 因此 h.hooks.get(name) 也返回一个"调度器"，逐个调用。
   hooks.all = (name) => hooks.get(name) || [];

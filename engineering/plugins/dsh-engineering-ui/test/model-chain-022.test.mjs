@@ -65,7 +65,9 @@ const { apply } = await import(url(rewritten));
 
 function harness() {
   const hooks = new Map();
+  const effects = [];
   const ctx = {
+    effect(factory) { const dispose = factory(); effects.push(dispose); return dispose; },
     // 【Webots 接入】index.js 已声明 inject 含 'tools' 并调用 ctx.tools.guard。
     tools: { guard() { return () => {}; } },
     on(name, fn) {
@@ -81,7 +83,8 @@ function harness() {
     subagents: { async listDescendants() { return []; } },
     userQuestions: { ask() { return new Promise(() => {}); } },
   };
-  const dispose = apply(ctx);
+  apply(ctx);
+  const dispose = () => { for (const cleanup of effects.splice(0).reverse()) cleanup(); };
   const all = (name) => hooks.get(name) || [];
   return { dispose, all };
 }

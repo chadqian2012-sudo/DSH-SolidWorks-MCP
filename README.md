@@ -1,6 +1,6 @@
 # 🔧 DSH 工程模式 · Engineering Mode
 
-在 DSH 的插件安装栏输入 `dsh-engineering-ui` 即可安装一体插件。它包含工程 UI、工程预设、SolidWorks 桥接工具和工程技能。DSH 提示重启或重新加载时按提示操作，首次加载会弹出已有的“如何使用”手册，之后可从工程模式卡片重新打开。
+在 DSH 的插件安装栏输入 `dsh-engineering-ui@1.5.1` 安装当前一体插件。它包含工程 UI、工程预设、SolidWorks 桥接工具和工程技能。DSH 提示重启或重新加载时按提示操作，首次加载会弹出已有的“如何使用”手册，之后可从工程模式卡片重新打开。
 
 本机仍需安装 SolidWorks 和带 pywin32 的 Python。首次使用在“设置 → 工程模式”确认程序路径。读图时，插件会引导 Flash 核对视图、尺寸落点和内部结构；信息不足时，可以集中请求指定方向、剖面或文字尺寸。
 
@@ -35,7 +35,7 @@ Windows 上若 `pwsh` 在执行第一条命令前报告 `grantWrite ... Win32 5`
 |------|-----|
 | 目标平台 | DeepSeek Harness **0.2.x**（Electron 桌面版 / `dsh web`） |
 | 预设 ID | `engineering` · 显示名「工程模式」· `order: 4` |
-| 一体插件 | `dsh-engineering-ui` **v1.5.0** |
+| 一体插件 | `dsh-engineering-ui` **v1.5.1** |
 | 技能 | **7** 个 |
 | 门禁 / 桥接脚本 | **12** 个核心脚本 + **14** 个物理模块 |
 | 回归测试 | **30** 个 Python + **12** 个插件测试 |

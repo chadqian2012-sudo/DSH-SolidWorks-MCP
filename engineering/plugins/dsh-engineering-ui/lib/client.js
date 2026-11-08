@@ -679,39 +679,31 @@ window.__ModuleLoader__.load({
       // ── 【需求1】说明弹窗（两 Tab，外观照抄官方 PresetGuideDialog）────────
       '.eng-guide-mask{background:rgba(0,0,0,.45);border:0;box-sizing:border-box;bottom:0;left:0;position:fixed;right:0;top:0;'
         + 'margin:0;max-height:none;max-width:none;width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:24px}',
-      '.eng-guide-dlg{background:var(--dsw-alias-bg-base,#fff);border-radius:12px;'
+      '.eng-guide-dlg{background:var(--dsw-alias-bg-layer-1,Canvas);color:var(--dsw-alias-label-primary,CanvasText);border-radius:12px;'
         + 'box-shadow:0 12px 48px rgba(0,0,0,.28);display:flex;flex-direction:column;'
         + 'max-height:min(78vh,720px);max-width:640px;width:100%;overflow:hidden}',
       '.eng-guide-hd{align-items:flex-start;display:flex;gap:12px;padding:20px 22px 12px}',
       '.eng-guide-title{font-size:17px;font-weight:600}',
-      '.eng-guide-intro{color:var(--dsw-alias-label-secondary,#5b6472);font-size:12.5px;'
+      '.eng-guide-intro{color:var(--dsw-alias-label-secondary,CanvasText);font-size:12.5px;'
         + 'line-height:1.6;margin-top:6px}',
-      '.eng-guide-x{background:transparent;border:0;border-radius:6px;color:#8b95a3;cursor:pointer;'
+      '.eng-guide-x{background:transparent;border:0;border-radius:6px;color:var(--dsw-alias-label-secondary,CanvasText);cursor:pointer;'
         + 'flex:0 0 auto;font-size:20px;line-height:1;padding:2px 8px}',
-      '.eng-guide-x:hover{background:var(--dsw-alias-bg-hover,rgba(127,127,127,.12));color:#1f2328}',
+      '.eng-guide-x:hover{background:var(--dsw-alias-bg-layer-3,Canvas);color:var(--dsw-alias-label-primary,CanvasText)}',
       '.eng-guide-tabs{display:flex;gap:6px;margin:0 22px 4px;'
-        + 'background:var(--dsw-alias-bg-sunken,#f2f4f7);border-radius:8px;padding:3px}',
-      '.eng-guide-tab{background:transparent;border:0;border-radius:6px;color:#5b6472;cursor:pointer;'
+        + 'background:var(--dsw-alias-bg-layer-2,Canvas);border-radius:8px;padding:3px}',
+      '.eng-guide-tab{background:transparent;border:0;border-radius:6px;color:var(--dsw-alias-label-secondary,CanvasText);cursor:pointer;'
         + 'flex:1 1 0;font-family:inherit;font-size:13px;padding:7px 10px;transition:background .12s}',
-      '.eng-guide-tab.on{background:var(--dsw-alias-bg-base,#fff);color:#1f2328;font-weight:600;'
+      '.eng-guide-tab.on{background:var(--dsw-alias-bg-layer-3,Canvas);color:var(--dsw-alias-label-primary,CanvasText);font-weight:600;'
         + 'box-shadow:0 1px 3px rgba(0,0,0,.08)}',
       '.eng-guide-body{overflow-y:auto;padding:14px 22px 22px;font-size:13px;line-height:1.7}',
       '.eng-guide-h{font-size:14px;font-weight:600;margin:14px 0 8px}',
       '.eng-guide-h:first-child{margin-top:2px}',
-      '.eng-guide-p{color:var(--dsw-alias-label-primary,#1f2328);margin:0 0 10px}',
-      '.eng-guide-tag{background:var(--dsw-alias-bg-sunken,#f2f4f7);border-radius:5px;color:#5b6472;'
+      '.eng-guide-p{color:var(--dsw-alias-label-primary,CanvasText);margin:0 0 10px}',
+      '.eng-guide-tag{background:var(--dsw-alias-bg-layer-2,Canvas);border-radius:5px;color:var(--dsw-alias-label-secondary,CanvasText);'
         + 'display:inline-block;font-size:11px;margin:0 0 8px;padding:2px 7px}',
-      '.eng-guide-quote{background:var(--dsw-alias-bg-sunken,#f7f8fa);'
-        + 'border-left:3px solid var(--dsw-alias-brand-primary,#3b82f6);border-radius:6px;'
-        + 'color:var(--dsw-alias-label-primary,#1f2328);margin:0 0 10px;padding:10px 12px}',
-      // 深色模式适配（宿主用 .dark 类切换）
-      '.dark .eng-guide-dlg{background:#1c1f24}',
-      '.dark .eng-guide-title,.dark .eng-guide-h,.dark .eng-guide-p,.dark .eng-guide-quote{color:#e6e8eb}',
-      '.dark .eng-guide-intro{color:#9aa4b2}',
-      '.dark .eng-guide-tabs{background:#24282e}',
-      '.dark .eng-guide-tag{background:#24282e;color:#9aa4b2}',
-      '.dark .eng-guide-quote{background:#24282e}',
-      '.dark .eng-guide-tab.on{background:#31363d}',
+      '.eng-guide-quote{background:var(--dsw-alias-bg-layer-2,Canvas);'
+        + 'border-left:3px solid var(--dsw-alias-border-l2,GrayText);border-radius:6px;'
+        + 'color:var(--dsw-alias-label-primary,CanvasText);margin:0 0 10px;padding:10px 12px}',
       '.dark .eng-help-btn:hover{color:#e6e8eb}',
       // ── 【需求1】注入到【预设卡片】上的按钮（对齐官方 cardHelp/helpButton）──
       // 官方：.cardFoot 用 flex 两端对齐，左侧 cardHelp（两个 ghost 按钮），
@@ -4409,6 +4401,12 @@ window.__ModuleLoader__.load({
         ref: dialogRef,
         className: 'eng-guide-mask',
         'aria-label': ENG_GUIDE.name,
+        onKeyDownCapture: function (event) {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (typeof onClose === 'function') onClose();
+        },
         onCancel: function (event) {
           event.preventDefault();
           if (typeof onClose === 'function') onClose();
